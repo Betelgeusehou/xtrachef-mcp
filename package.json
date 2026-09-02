@@ -1,0 +1,19 @@
+{
+  "name": "xtrachef-mcp",
+  "version": "1.0.0",
+  "description": "MCP server for xtraCHEF by Toast invoice data — price history, price-change alerts, and spend summaries over the app's CSV exports (xtraCHEF has no public API)",
+  "main": "src/main.js",
+  "bin": { "xtrachef-mcp": "./src/main.js" },
+  "scripts": {
+    "start": "node src/main.js"
+  },
+  "keywords": ["mcp", "xtrachef", "toast", "restaurant", "invoices", "food-cost", "model-context-protocol"],
+  "author": "Betelgeusehou",
+  "license": "MIT",
+  "repository": { "type": "git", "url": "https://github.com/Betelgeusehou/xtrachef-mcp.git" },
+  "type": "module",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "zod": "^4.5.4"
+  }
+}
