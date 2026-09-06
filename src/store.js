@@ -6,7 +6,8 @@ import os from "os";
 import { fileURLToPath } from "url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-export const DATA_DIR = path.join(__dirname, "..", "data");
+// Override with XTRACHEF_DATA_DIR (e.g. a mounted volume like /data when hosted).
+export const DATA_DIR = process.env.XTRACHEF_DATA_DIR || path.join(__dirname, "..", "data");
 const STORE_FILE = path.join(DATA_DIR, "lines.json");
 const RAW_DIR = path.join(DATA_DIR, "raw");
 export const DOWNLOADS_DIR = path.join(os.homedir(), "Downloads");
@@ -127,6 +128,26 @@ export function ingestDownloads({ archive = true } = {}) {
   }
   saveStore(store);
   return { files: results, total_lines: store.lines.length };
+}
+
+// Ingest CSV passed as text (MCP tool on any surface, or the hosted /ingest endpoint).
+export function ingestText(text, sourceName) {
+  const store = loadStore();
+  const res = ingestCsvText(store, text, sourceName);
+  if (!res.error) {
+    fs.mkdirSync(RAW_DIR, { recursive: true });
+    fs.writeFileSync(path.join(RAW_DIR, sourceName), text);
+  }
+  saveStore(store);
+  return { file: sourceName, ...res, total_lines: store.lines.length };
+}
+
+// Replace the whole store (used to seed a hosted instance from a local lines.json).
+export function replaceStore(obj) {
+  if (!obj || !Array.isArray(obj.lines)) throw new Error("store must be an object with a 'lines' array");
+  const store = { lines: obj.lines, ingested_files: obj.ingested_files || {}, last_ingest: obj.last_ingest || new Date().toISOString() };
+  saveStore(store);
+  return { replaced: true, total_lines: store.lines.length, ingested_files: Object.keys(store.ingested_files).length };
 }
 
 export function ingestFile(filePath) {

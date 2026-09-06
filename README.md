@@ -57,6 +57,48 @@ Register it with your MCP client. For Claude Code / Claude Desktop, add to your
 Repeat on whatever cadence you like — weekly works well. Each ingest only adds
 lines it hasn't seen before, so overlapping date ranges are harmless.
 
+## Hosting it (Railway, or any Node host)
+
+The server also runs as a remote MCP over Streamable HTTP, so claude.ai, the Claude
+mobile app, Claude Code on the web, and cloud routines can all use it without a local
+machine. This mirrors how [toast-mcp](https://github.com/Betelgeusehou/toast-mcp-2026-complete) is hosted.
+
+1. Deploy this repo as a Railway service (GitHub source) and attach a **volume** mounted
+   at `/data` so ingested invoices persist across deploys.
+2. Set variables:
+   - `XTRACHEF_MCP_MODE=http`
+   - `XTRACHEF_MCP_SECRET=<long random string>` (generate one:
+     `node -e "console.log(crypto.randomUUID().replaceAll('-',''))"`)
+   - `XTRACHEF_DATA_DIR=/data`
+   - `PORT=3000` (Railway sets this automatically; set the domain's target port to 3000)
+3. Generate a domain and confirm `https://<domain>/health` returns `{"status":"ok",...}`.
+4. Add it in claude.ai: Settings → Connectors → Add custom connector, URL
+   `https://<domain>/<secret>/mcp`. The secret in the URL is the only lock on your
+   invoice data; treat the URL like a password and rotate the variable if it leaks.
+
+Endpoints (all under `/<secret>/`, or send `Authorization: Bearer <secret>` instead):
+
+| Method | Path | Purpose |
+|---|---|---|
+| POST | `/mcp` | MCP endpoint (Streamable HTTP, stateless) |
+| POST | `/ingest?name=Invoices_x.csv` | Ingest a CSV export sent as the request body |
+| POST | `/store` | Replace the whole store with a `lines.json` (seed from a local copy) |
+| GET | `/store` | Download the store as `lines.json` |
+| GET | `/status` | Same as the `xtrachef_status` tool |
+| GET | `/health` | Unauthenticated health check |
+
+Seed a fresh hosted instance from a local store:
+
+```bash
+curl -X POST --data-binary @data/lines.json https://<domain>/<secret>/store
+```
+
+Refresh from anywhere: download the CSV from xtraCHEF, then either `curl -X POST
+--data-binary @Invoices_x.csv "https://<domain>/<secret>/ingest?name=Invoices_x.csv"`
+or hand the CSV text to the `xtrachef_ingest_csv_text` tool from any Claude surface.
+In http mode the two local-filesystem tools (`ingest_downloads`, `ingest_file`) are not
+registered, since the server has no Downloads folder.
+
 ## Tools
 
 | Tool | What it does |
@@ -71,6 +113,8 @@ lines it hasn't seen before, so overlapping date ranges are harmless.
 | `xtrachef_spend_summary` | Spend grouped by vendor, category, GL code, or location |
 
 ## Storage
+
+Set `XTRACHEF_DATA_DIR` to move the data directory (hosted deployments use a mounted volume).
 
 - `data/lines.json` — normalized line items, deduped by
   (location, vendor, invoice #, item code, description, qty, unit price, line total)
