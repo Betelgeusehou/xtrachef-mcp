@@ -8,6 +8,9 @@
 //   XTRACHEF_MCP_MODE=http     hosted use (Railway etc.): Streamable HTTP MCP at
 //                              POST /<secret>/mcp, plus /health and data endpoints.
 import http from "http";
+import { webcrypto } from "crypto";
+// Node 18 does not expose global crypto, which the MCP SDK transport needs.
+if (!globalThis.crypto) globalThis.crypto = webcrypto;
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
