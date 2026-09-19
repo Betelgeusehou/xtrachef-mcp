@@ -11,7 +11,8 @@ export async function tick(now=new Date()){
  if(running||!inRefreshWindow(now)||process.env.DASHBOARD_ENABLED!=='true')return;
  const hour=now.toISOString().slice(0,13),statusFile=path.join(dataDir(),'run-status.json');
  if(primeRequested){primeRequested=false;running=true;try{const result=await run('prime.mjs');atomic(path.join(dataDir(),'invoice-refresh-status.json'),{completedAt:new Date().toISOString(),...result});}finally{running=false;}return;}
- if(load(statusFile)?.hour===hour)return;
+ const prior=load(statusFile);
+ if(prior?.hour===hour&&prior.state!=='running')return;
  running=true;atomic(statusFile,{hour,state:'running',startedAt:now.toISOString(),nextExpectedAt:nextRefresh(now)});
  try{const results=[];for(const script of ['orders.mjs','prime.mjs'])results.push(await run(script));const previous=load(path.join(dataDir(),'primePrevious','snapshot.json'));if(!previous||Date.now()-Date.parse(previous.generatedAt)>86400000)results.push(await run('prime.mjs',['--previous-month']));atomic(statusFile,{hour,state:results.every(r=>r.ok)?'ready':'partial',completedAt:new Date().toISOString(),nextExpectedAt:nextRefresh(),results});}catch{atomic(statusFile,{hour,state:'error',completedAt:new Date().toISOString(),nextExpectedAt:nextRefresh()});}finally{running=false;}
 }
