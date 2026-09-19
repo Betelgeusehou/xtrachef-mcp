@@ -1,0 +1,12 @@
+{
+  "biweeklyCents": 557166,
+  "salaryBeforeOwnerCents": 1007166,
+  "ownerExcludedCents": 450000,
+  "excludesOwnerComp": true,
+  "periodStart": "2026-08-17",
+  "periodEnd": "2026-08-30",
+  "checkDate": "2026-09-02",
+  "ownerExclusionConfirmedDate": "2026-09-18",
+  "basis": "Verified August 17–30 payroll salary less owner-confirmed $4,500 owner pay; used as an estimate after that payroll period",
+  "sources": ["Montrose August payroll 2.pdf", "washingotn august payroll 2.pdf"]
+}

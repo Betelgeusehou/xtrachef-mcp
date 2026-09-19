@@ -8,6 +8,8 @@
 //   XTRACHEF_MCP_MODE=http     hosted use (Railway etc.): Streamable HTTP MCP at
 //                              POST /<secret>/mcp, plus /health and data endpoints.
 import http from "http";
+import {handleDashboard} from "../dashboard/http.mjs";
+import {startDashboardRunner} from "../dashboard/runner.mjs";
 import { webcrypto } from "crypto";
 // Node 18 does not expose global crypto, which the MCP SDK transport needs.
 if (!globalThis.crypto) globalThis.crypto = webcrypto;
@@ -128,6 +130,7 @@ async function runHttp() {
   };
 
   const srv = http.createServer(async (req, res) => {
+    if(await handleDashboard(req,res))return;
     const url = new URL(req.url, "http://localhost");
     const p = url.pathname;
     const bearerOk = req.headers.authorization === `Bearer ${secret}`;
@@ -168,6 +171,7 @@ async function runHttp() {
   });
 
   srv.listen(port, "0.0.0.0", () => {
+    startDashboardRunner();
     console.error(`xtrachef-mcp running (http) on :${port}  data dir: ${store.DATA_DIR}`);
     console.error(`  MCP endpoint: POST /<secret>/mcp   health: GET /health`);
   });
