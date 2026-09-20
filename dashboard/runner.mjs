@@ -14,7 +14,7 @@ export async function tick(now=new Date()){
  const prior=load(statusFile);
  if(prior?.hour===hour&&prior.state!=='running')return;
  running=true;atomic(statusFile,{hour,state:'running',startedAt:now.toISOString(),nextExpectedAt:nextRefresh(now)});
- try{const results=[];for(const script of ['orders.mjs','prime.mjs','refresh-beehiiv.mjs','refresh-klaviyo.mjs'])results.push(await run(script));const previous=load(path.join(dataDir(),'primePrevious','snapshot.json'));if(!previous||Date.now()-Date.parse(previous.generatedAt)>86400000)results.push(await run('prime.mjs',['--previous-month']));atomic(statusFile,{hour,state:results.every(r=>r.ok)?'ready':'partial',completedAt:new Date().toISOString(),nextExpectedAt:nextRefresh(),results});}catch{atomic(statusFile,{hour,state:'error',completedAt:new Date().toISOString(),nextExpectedAt:nextRefresh()});}finally{running=false;}
+ try{const results=[];for(const script of ['orders.mjs','prime.mjs','refresh-beehiiv.mjs','refresh-klaviyo.mjs','refresh-sandcastles.mjs'])results.push(await run(script));const previous=load(path.join(dataDir(),'primePrevious','snapshot.json'));if(!previous||Date.now()-Date.parse(previous.generatedAt)>86400000)results.push(await run('prime.mjs',['--previous-month']));atomic(statusFile,{hour,state:results.every(r=>r.ok)?'ready':'partial',completedAt:new Date().toISOString(),nextExpectedAt:nextRefresh(),results});}catch{atomic(statusFile,{hour,state:'error',completedAt:new Date().toISOString(),nextExpectedAt:nextRefresh()});}finally{running=false;}
 }
 export function requestPrimeRefresh(){primeRequested=true;void tick();}
 export function startDashboardRunner(){if(process.env.DASHBOARD_ENABLED!=='true')return;void tick();const timer=setInterval(()=>void tick(),60000);timer.unref();}

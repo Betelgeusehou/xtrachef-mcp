@@ -1,0 +1,3 @@
+import path from 'node:path';import {dataDir,load,saveSnapshot,atomic} from './state.mjs';import {collectSandcastles} from './sandcastles.mjs';
+try{const result=await collectSandcastles({previous:load(path.join(dataDir(),'social/snapshot.json'))});if(result){saveSnapshot('social',result);atomic(path.join(dataDir(),'sandcastles-status.json'),{state:'ready',checkedAt:result.checkedAt,periodThrough:result.periodThrough,nextSourceReadAfter:new Date(Date.parse(result.checkedAt)+3600000).toISOString()});}}
+catch{atomic(path.join(dataDir(),'sandcastles-status.json'),{state:'error',attemptedAt:new Date().toISOString(),message:'Cloud social refresh failed; previous verified figures retained.'});process.exitCode=1;}
