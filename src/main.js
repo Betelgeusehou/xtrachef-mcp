@@ -17,6 +17,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import * as store from "./store.js";
+import * as sync from "./sync.js";
 
 const MODE = process.env.XTRACHEF_MCP_MODE || "stdio";
 
@@ -35,7 +36,7 @@ const filterShape = {
 export function buildServer({ local = true } = {}) {
   const server = new McpServer({ name: "xtrachef-mcp", version: "1.1.0" });
 
-  server.tool("xtrachef_status", "Data coverage: line counts, date ranges, locations, ingested files, and how to refresh the data.", {}, async () => json(store.status()));
+  server.tool("xtrachef_status", "Data coverage: line counts, date ranges, locations, ingested files, nightly sync health (sync.state is 'ALERT' when a night's load failed or no new invoices arrived for 2+ days), and how to refresh the data.", {}, async () => json({ ...store.status(), ...(local ? {} : { sync: sync.health() }) }));
 
   if (local) {
     server.tool("xtrachef_ingest_downloads",
@@ -52,6 +53,13 @@ export function buildServer({ local = true } = {}) {
     "Ingest an xtraCHEF invoice-line CSV export passed as text (works from any surface: paste or read the CSV from Drive/Gmail and pass its contents). Duplicate lines are skipped, so re-ingesting is safe.",
     { csv: z.string().describe("Full CSV text including the header row"), filename: z.string().optional().describe("Source name for the ingest log, e.g. Invoices_2026-09.csv") },
     async ({ csv, filename }) => json(store.ingestText(csv, filename || `pasted_${Date.now()}.csv`)));
+
+  if (!local) {
+    server.tool("xtrachef_sync_now",
+      "Load the newest xtraCHEF export from the 'xtraCHEF Exports' Google Drive folder right now (same job as the nightly sync). Set force=true to reload a file that was already loaded.",
+      { force: z.boolean().optional().describe("Reload even if the newest file was already loaded") },
+      async ({ force }) => json({ result: await sync.syncNow({ force: !!force }), sync: sync.health() }));
+  }
 
   server.tool("xtrachef_list_invoices",
     "List invoices (header level) matching filters, newest first.",
@@ -161,7 +169,10 @@ async function runHttp() {
         return send(res, 200, JSON.stringify(store.loadStore()), { "Content-Disposition": "attachment; filename=lines.json" });
       }
       if (route === "/status" && req.method === "GET") {
-        return send(res, 200, store.status());
+        return send(res, 200, { ...store.status(), sync: sync.health() });
+      }
+      if (route === "/sync" && req.method === "POST") {
+        return send(res, 200, await sync.syncNow({ force: url.searchParams.get("force") === "true" }));
       }
       return send(res, 404, "Not found");
     } catch (e) {
@@ -172,6 +183,7 @@ async function runHttp() {
 
   srv.listen(port, "0.0.0.0", () => {
     startDashboardRunner();
+    sync.startSyncScheduler();
     console.error(`xtrachef-mcp running (http) on :${port}  data dir: ${store.DATA_DIR}`);
     console.error(`  MCP endpoint: POST /<secret>/mcp   health: GET /health`);
   });
