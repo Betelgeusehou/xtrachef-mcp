@@ -142,6 +142,54 @@ export function ingestText(text, sourceName) {
   return { file: sourceName, ...res, total_lines: store.lines.length };
 }
 
+// Invoice-level replace: every invoice present in the export replaces all of that
+// invoice's existing lines. Safe to re-run (no double counting), keeps legitimately
+// repeated lines on one invoice, and lets corrected invoices overwrite stale copies.
+const invoiceKey = (l) => [l.location, l.vendor, l.invoice_number, l.doc_type].join("|");
+export function replaceInvoicesFromCsv(text, sourceName) {
+  const rows = parseCsv(text.replace(/^\uFEFF/, ""));
+  if (!rows.length) return { error: "empty file" };
+  const header = rows[0].map(h => h.trim());
+  if (!header.includes("Line Description") || !header.includes("Invoice Number")) {
+    return { error: "not an xtraCHEF invoice line export (missing expected columns)" };
+  }
+  const idx = {};
+  header.forEach((h, i) => { const k = COLMAP[h]; if (k) idx[k] = i; });
+  const incoming = [];
+  for (const row of rows.slice(1)) {
+    const line = {};
+    for (const [k, i] of Object.entries(idx)) {
+      let v = (row[i] ?? "").trim();
+      if (NUMERIC.has(k)) v = v === "" ? null : Number(v);
+      else if (DATES.has(k)) v = toIso(v);
+      line[k] = v;
+    }
+    if (!line.invoice_number && !line.description) continue;
+    incoming.push(line);
+  }
+  const keys = new Set(incoming.map(invoiceKey));
+  const store = loadStore();
+  const before = store.lines.length;
+  store.lines = store.lines.filter(l => !keys.has(invoiceKey(l)));
+  const removed = before - store.lines.length;
+  store.lines.push(...incoming);
+  store.ingested_files[sourceName] = { at: new Date().toISOString(), added: incoming.length, replaced_invoices: keys.size };
+  store.last_ingest = new Date().toISOString();
+  fs.mkdirSync(RAW_DIR, { recursive: true });
+  fs.writeFileSync(path.join(RAW_DIR, sourceName), text);
+  saveStore(store);
+  return { invoices: keys.size, lines: incoming.length, removed, added: incoming.length, total_lines: store.lines.length };
+}
+
+export function newestDates() {
+  let upload_date = null, invoice_date = null;
+  for (const l of loadStore().lines) {
+    if (l.upload_date && (!upload_date || l.upload_date > upload_date)) upload_date = l.upload_date;
+    if (l.invoice_date && (!invoice_date || l.invoice_date > invoice_date)) invoice_date = l.invoice_date;
+  }
+  return { upload_date, invoice_date };
+}
+
 // Replace the whole store (used to seed a hosted instance from a local lines.json).
 export function replaceStore(obj) {
   if (!obj || !Array.isArray(obj.lines)) throw new Error("store must be an object with a 'lines' array");
@@ -259,8 +307,11 @@ export function status() {
     upload_date_range: uploads.length ? { from: uploads[0], to: uploads[uploads.length - 1] } : null,
     locations: [...new Set(store.lines.map(l => l.location))],
     vendors: [...new Set(store.lines.map(l => l.vendor))].length,
-    ingested_files: store.ingested_files,
+    ingested_files: Object.fromEntries(Object.entries(store.ingested_files || {}).sort((a, b) => (b[1].at || "").localeCompare(a[1].at || "")).slice(0, 15)),
+    ingested_file_count: Object.keys(store.ingested_files || {}).length,
     last_ingest: store.last_ingest,
-    refresh_instructions: "xtraCHEF (app.xtrachef.com) > Invoices > set upload-date range > Download. Then run xtrachef_ingest_downloads.",
+    refresh_instructions: process.env.XTRACHEF_MCP_MODE === "http"
+      ? "Hosted: each night a scheduled task drops the xtraCHEF export into the 'xtraCHEF Exports' Google Drive folder and the server loads it (see 'sync'). To load the newest file now, run xtrachef_sync_now."
+      : "xtraCHEF (app.xtrachef.com) > Invoices > set upload-date range > Download. Then run xtrachef_ingest_downloads.",
   };
 }
