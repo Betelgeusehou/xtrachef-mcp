@@ -1,3 +1,4 @@
+import {activityEvents} from './activity.mjs';
 import fs from 'node:fs';
 import path from 'node:path';
 export const dataDir=()=>process.env.DASHBOARD_DATA_DIR||'/data/dashboard';
@@ -14,4 +15,4 @@ export function validateSnapshot(source,value,now=Date.now()){
  return at;
 }
 export function saveSnapshot(source,value){const at=validateSnapshot(source,value),file=path.join(dataDir(),source,'snapshot.json'),prior=load(file);if(prior&&Date.parse(collectedAt(source,prior))>=at)return false;atomic(file,value);return true;}
-export function snapshots(){const result={};for(const source of sources){const value=load(path.join(dataDir(),source,'snapshot.json'));if(value)result[source]=value;}return {snapshots:result,collectedAt:Object.entries(result).map(([s,v])=>collectedAt(s,v)).filter(Boolean).sort().at(-1)||null,collector:load(path.join(dataDir(),'run-status.json'))};}
+export function snapshots(){const result={};for(const source of sources){const value=load(path.join(dataDir(),source,'snapshot.json'));if(value)result[source]=value;}return {activity:activityEvents(),snapshots:result,collectedAt:Object.entries(result).map(([s,v])=>collectedAt(s,v)).filter(Boolean).sort().at(-1)||null,collector:load(path.join(dataDir(),'run-status.json'))};}

@@ -1,3 +1,4 @@
+import {recordInvoiceImport,ingestCleanup} from './activity.mjs';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -21,13 +22,14 @@ export function importInvoices(envelope){
  const incoming=reconcile({lines},parsed),dir=path.join(dataDir(),'invoices'),file=path.join(dir,'lines.json');
  const prior=load(file),priorManifest=prior?.dashboardManifest;
  if(priorManifest&&Date.parse(manifest.exportFileAt)<Date.parse(priorManifest.exportFileAt))throw Error('Older invoice export rejected');
- if(priorManifest?.sha256===hash)return {changed:false,invoiceCount:parsed.groups.size};
+ if(priorManifest?.sha256===hash){recordInvoiceImport(prior);return {changed:false,invoiceCount:parsed.groups.size};}
  const next=prior?reconcile(prior,parsed):incoming;
  const cleanManifest={...manifest};delete cleanManifest.rawCsv;
  next.last_ingest=manifest.importedAt;next.dashboardManifest=cleanManifest;
  fs.mkdirSync(dir,{recursive:true});if(fs.existsSync(file))fs.copyFileSync(file,path.join(dir,'lines.previous.json'));
  fs.mkdirSync(path.join(dir,'raw'),{recursive:true});fs.writeFileSync(path.join(dir,'raw',hash+'.csv'),manifest.rawCsv);
  atomic(file,next);atomic(path.join(dir,'import-manifest.json'),cleanManifest);
+ recordInvoiceImport(next);
  return {changed:true,invoiceCount:parsed.groups.size,lineCount:next.lines.length};
 }
 export async function handleDashboard(req,res){
@@ -37,6 +39,7 @@ export async function handleDashboard(req,res){
  if(!authorized(req.headers.authorization,process.env[reading?'DASHBOARD_READ_KEY':'DASHBOARD_IMPORT_KEY'])){respond(401,{error:'Unauthorized'});return true;}
  try{
   if(reading){respond(200,snapshots());return true;}
+  if(req.method==='POST'&&route==='/dashboard/activity/cleanup'){respond(200,{ok:true,changed:ingestCleanup(await body(req))});return true;}
   if(req.method==='POST'&&route==='/dashboard/import'){const result=importInvoices(await body(req));respond(200,result);if(result.changed)requestPrimeRefresh();return true;}
   if(req.method==='POST'&&route==='/dashboard/snapshots'){
    const payload=await body(req);if(!payload?.snapshots||Array.isArray(payload.snapshots)||typeof payload.snapshots!=='object')throw Error('Invalid snapshots');
