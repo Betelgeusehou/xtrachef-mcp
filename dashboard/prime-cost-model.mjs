@@ -1,6 +1,7 @@
+export const classifierVersion='2026-09-25-categories-v1';
 const food = new Set(['Dairy','Protein','Paper - Food Costs','Frozen Goods','Dry Goods','Cooking Oil','Produce','Bread','Oils, Vinegars','Dressings','Spices']);
 const bar = new Set(['Liquor','Beer','Wine','Mixer','Bar Produce','Cost - Liquor:Cost - Liquor','Cost - Liquor:Cost - Bar Produce','Drink Presentation (Garnishes)']);
-const nonPrime = new Set(['Utilities','Restaurant Supply','Administrative Expense','Non Controllable Expenses:Equipment Lease:Rental Equipment','Repairs and Maintenance','Kitchen Supply','Cleaning Supplies','Phone-Internet','Bar Supply','Controllable Expenses:Administrative & General:Internet Subscription']);
+const nonPrime = new Set(['Utilities','Restaurant Supply','Administrative Expense','Non Controllable Expenses:Equipment Lease:Rental Equipment','Repairs and Maintenance','Kitchen Supply','Cleaning Supplies','Controllable Expenses:Employee Benefits','Operations','Controllable Expenses:Direct Operating Expenses:Supplies - Paper','Controllable Expenses:Direct Operating Expenses:Kitchen Utencils','Phone-Internet','Bar Supply','Controllable Expenses:Administrative & General:Internet Subscription']);
 export const stores = ['Montrose','Washington'];
 export function auditWages(employees,entries,from,through){
  const names=new Map(employees.map(e=>[e.guid,`${e.firstName} ${e.lastName}`.toLowerCase().trim()]));
@@ -36,9 +37,9 @@ export function dateRange(from,through) {
 export function classify(line) {
  if(!stores.some(s=>line.location===`${s} - Betelgeuse Betelgeuse`))return 'review';
  if(/^inventory_seed$/i.test(line.category||'') || /^Betelgeuse Betelgeuse$/i.test(line.vendor||''))return 'excluded';
- if(line.status!=='Completed'||line.doc_type!=='Invoice')return 'review';
+ if(line.status!=='Completed'||!['Invoice','Receipt'].includes(line.doc_type))return 'review';
  const c=line.category,d=line.description||'';
- if(c==='Keg Deposits'||/^EMPTY-(MICROSTAR|LONE PINT)\b/i.test(d)||/^1\/2 Keg Shell (Deposit|Credit)$/i.test(d))return 'deposits';
+ if(c==='Keg Deposits'||/^EMPTY-(MICROSTAR|LONE PINT|KEG LOGISTICS)\b/i.test(d)||/^1\/2 Keg Shell (Deposit|Credit)$/i.test(d))return 'deposits';
  if(/shell (credit|return|deposit)|^empty-/i.test(d))return 'review';
  if(food.has(c))return 'food';if(bar.has(c))return 'bar';if(c==='NA Bev')return 'na';
  return nonPrime.has(c)?'excluded':'review';
@@ -73,5 +74,5 @@ export function makeSnapshot({from,through,invoices,status,records,rates,salaryB
   const bucket=classify(line);day[bucket]+=line.line_total;groups[bucket]+=line.line_total;
  }
  for(const day of days)for(const r of records.filter(r=>r.businessDate===Number(day.date.replaceAll('-',''))))day[r.type==='sales'?'sales':'wages']+=r.type==='sales'?r.data.netSales:r.data.totalWages;
- return {generatedAt:now,invoiceIngestAt:status.last_ingest,latestInvoiceDate:status.invoice_date_range.to,toastFetchedAt:now,from,through,salaryBasis:salaryBaseline?.basis||'Configured PrimeCost run-rates from July 6–19 payroll; current rates need verification',salaryBiweekly,groups,days,undatedLines,refresh};
+ return {classifierVersion,generatedAt:now,invoiceIngestAt:status.last_ingest,latestInvoiceDate:status.invoice_date_range.to,toastFetchedAt:now,from,through,salaryBasis:salaryBaseline?.basis||'Configured PrimeCost run-rates from July 6–19 payroll; current rates need verification',salaryBiweekly,groups,days,undatedLines,refresh};
 }

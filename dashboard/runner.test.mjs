@@ -1,3 +1,4 @@
+import {classifierVersion} from './prime-cost-model.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {runSource} from './runner.mjs';
@@ -15,4 +16,4 @@ test('enabled Sandcastles and existing sources preserve executor results includi
  }
 });
 import {invoiceRefreshTargets} from './runner.mjs';
-test('new invoice import refreshes stale affected months without duplicating current month',()=>{const store={last_ingest:'2026-09-25T19:22:00Z',lines:[{invoice_date:'2026-08-24'}]},now=new Date('2026-09-25T20:00:00Z'),fresh={generatedAt:'2026-09-25T19:23:00Z'},old={generatedAt:'2026-09-24T19:00:00Z'};assert.deepEqual(invoiceRefreshTargets(store,fresh,old,now),['primePrevious']);assert.deepEqual(invoiceRefreshTargets(store,fresh,fresh,now),[]);assert.deepEqual(invoiceRefreshTargets(store,old,old,now),['prime','primePrevious']);assert.deepEqual(invoiceRefreshTargets({...store,lines:[{invoice_date:'2026-09-24'}]},fresh,old,now),[]);});
+test('new invoice import refreshes stale affected months without duplicating current month',()=>{const store={last_ingest:'2026-09-25T19:22:00Z',lines:[{invoice_date:'2026-08-24'}]},now=new Date('2026-09-25T20:00:00Z'),fresh={classifierVersion,generatedAt:'2026-09-25T19:23:00Z'},old={generatedAt:'2026-09-24T19:00:00Z'};assert.deepEqual(invoiceRefreshTargets(store,fresh,old,now),['primePrevious']);assert.deepEqual(invoiceRefreshTargets(store,fresh,fresh,now),[]);assert.deepEqual(invoiceRefreshTargets(store,old,old,now),['prime','primePrevious']);assert.deepEqual(invoiceRefreshTargets({...store,lines:[{invoice_date:'2026-09-24'}]},fresh,old,now),[]);});

@@ -1,3 +1,4 @@
+import {classifierVersion} from './prime-cost-model.mjs';
 import {recordRefresh,recoverInvoiceActivity} from './activity.mjs';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
@@ -24,8 +25,8 @@ export async function tick(now=new Date()){
 export function invoiceRefreshTargets(store,current,previous,now=new Date()){
  const imported=Date.parse(store?.last_ingest);if(!Number.isFinite(imported))return [];
  const local=new Intl.DateTimeFormat('en-CA',{timeZone:'America/Chicago',year:'numeric',month:'2-digit'}).formatToParts(now);const year=Number(local.find(p=>p.type==='year').value),month=Number(local.find(p=>p.type==='month').value);const previousMonth=new Date(Date.UTC(year,month-2,1)).toISOString().slice(0,7);
- const targets=[];if(!(Date.parse(current?.generatedAt)>=imported))targets.push('prime');
- if(store.lines?.some(line=>line.invoice_date?.startsWith(previousMonth))&&!(Date.parse(previous?.generatedAt)>=imported))targets.push('primePrevious');
+ const targets=[];if(current?.classifierVersion!==classifierVersion||!(Date.parse(current?.generatedAt)>=imported))targets.push('prime');
+ if(store.lines?.some(line=>line.invoice_date?.startsWith(previousMonth))&&(previous?.classifierVersion!==classifierVersion||!(Date.parse(previous?.generatedAt)>=imported)))targets.push('primePrevious');
  return targets;
 }
 function invoiceTargets(){return invoiceRefreshTargets(load(path.join(dataDir(),'invoices/lines.json')),load(path.join(dataDir(),'prime/snapshot.json')),load(path.join(dataDir(),'primePrevious/snapshot.json')));}
