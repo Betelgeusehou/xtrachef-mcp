@@ -15,11 +15,19 @@ export async function runSource(script,args=[],{env=process.env,execute=run}={})
 export async function tick(now=new Date()){
  if(running||!inRefreshWindow(now)||process.env.DASHBOARD_ENABLED!=='true')return;
  const hour=now.toISOString().slice(0,13),statusFile=path.join(dataDir(),'run-status.json');
- if(primeRequested){primeRequested=false;running=true;try{const result=await run('prime.mjs');recordRefresh({...result,source:'prime-invoice-retry'},new Date().toISOString());atomic(path.join(dataDir(),'invoice-refresh-status.json'),{completedAt:new Date().toISOString(),...result});}finally{running=false;}return;}
+ if(primeRequested){primeRequested=false;running=true;try{const results=[];for(const target of invoiceTargets()){const result=await run('prime.mjs',target==='primePrevious'?['--previous-month']:[]);results.push({...result,target});recordRefresh({...result,source:target+'-invoice-retry'},new Date().toISOString());}atomic(path.join(dataDir(),'invoice-refresh-status.json'),{completedAt:new Date().toISOString(),ok:results.every(r=>r.ok),results});}finally{running=false;}return;}
  const prior=load(statusFile);
  if(prior?.hour===hour&&prior.state!=='running')return;
  running=true;atomic(statusFile,{hour,state:'running',startedAt:now.toISOString(),nextExpectedAt:nextRefresh(now)});
  try{const results=[];for(const script of ['orders.mjs','prime.mjs','refresh-beehiiv.mjs','refresh-klaviyo.mjs','refresh-sandcastles.mjs'])results.push(await runSource(script));for(const result of results)recordRefresh(result,hour);const previous=load(path.join(dataDir(),'primePrevious','snapshot.json'));if(!previous||Date.now()-Date.parse(previous.generatedAt)>86400000){const result=await run('prime.mjs',['--previous-month']);results.push(result);recordRefresh({...result,source:'prime-previous-month'},hour);}atomic(statusFile,{hour,state:results.every(r=>r.ok)?'ready':'partial',completedAt:new Date().toISOString(),nextExpectedAt:nextRefresh(),results});}catch{atomic(statusFile,{hour,state:'error',completedAt:new Date().toISOString(),nextExpectedAt:nextRefresh()});}finally{running=false;}
 }
+export function invoiceRefreshTargets(store,current,previous,now=new Date()){
+ const imported=Date.parse(store?.last_ingest);if(!Number.isFinite(imported))return [];
+ const local=new Intl.DateTimeFormat('en-CA',{timeZone:'America/Chicago',year:'numeric',month:'2-digit'}).formatToParts(now);const year=Number(local.find(p=>p.type==='year').value),month=Number(local.find(p=>p.type==='month').value);const previousMonth=new Date(Date.UTC(year,month-2,1)).toISOString().slice(0,7);
+ const targets=[];if(!(Date.parse(current?.generatedAt)>=imported))targets.push('prime');
+ if(store.lines?.some(line=>line.invoice_date?.startsWith(previousMonth))&&!(Date.parse(previous?.generatedAt)>=imported))targets.push('primePrevious');
+ return targets;
+}
+function invoiceTargets(){return invoiceRefreshTargets(load(path.join(dataDir(),'invoices/lines.json')),load(path.join(dataDir(),'prime/snapshot.json')),load(path.join(dataDir(),'primePrevious/snapshot.json')));}
 export function requestPrimeRefresh(){primeRequested=true;void tick();}
-export function startDashboardRunner(){try{recoverInvoiceActivity();}catch{console.error('Dashboard invoice activity recovery failed');}if(process.env.DASHBOARD_ENABLED!=='true')return;void tick();const timer=setInterval(()=>void tick(),60000);timer.unref();}
+export function startDashboardRunner(){try{recoverInvoiceActivity();}catch{console.error('Dashboard invoice activity recovery failed');}if(process.env.DASHBOARD_ENABLED!=='true')return;primeRequested=invoiceTargets().length>0;void tick();const timer=setInterval(()=>void tick(),60000);timer.unref();}
