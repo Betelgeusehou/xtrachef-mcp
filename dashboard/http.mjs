@@ -1,3 +1,4 @@
+import {handleSandcastlesCallback} from './sandcastles-pkce.mjs';
 import {recordInvoiceImport,ingestCleanup} from './activity.mjs';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
@@ -33,6 +34,7 @@ export function importInvoices(envelope){
  return {changed:true,invoiceCount:parsed.groups.size,lineCount:next.lines.length};
 }
 export async function handleDashboard(req,res){
+ if(await handleSandcastlesCallback(req,res))return true;
  const route=new URL(req.url,'http://localhost').pathname;if(!route.startsWith('/dashboard/'))return false;
  const respond=(status,value)=>{res.writeHead(status,{'Content-Type':'application/json','Cache-Control':'private, no-store'});res.end(JSON.stringify(value));};
  const reading=req.method==='GET'&&route==='/dashboard/snapshots';
@@ -51,3 +53,4 @@ export async function handleDashboard(req,res){
  }catch{respond(400,{error:'Invalid or stale payload; existing data retained'});}
  return true;
 }
+

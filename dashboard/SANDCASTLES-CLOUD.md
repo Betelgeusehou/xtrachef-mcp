@@ -30,3 +30,21 @@ Public metadata read during preparation:
 - https://signin.sandcastles.ai/.well-known/openid-configuration
 
 No paid analysis tools are used.
+
+## Prepared PKCE fallback (not registered or deployed)
+
+The authorization-code fallback adds `/dashboard/oauth/sandcastles/callback` to the existing service. It is disabled unless `SANDCASTLES_OAUTH_CALLBACK_ENABLED=true`. Set `SANDCASTLES_REDIRECT_URI` to that exact HTTPS path on the existing service hostname, without query or fragment. Configure proxy/access logs to omit callback query strings (they contain a short-lived authorization code).
+
+After review, deploy the code with collection still disabled. Verify callback routing before registration. Explicit operator steps (none performed during implementation):
+
+1. `SANDCASTLES_BOOTSTRAP_ALLOWED=true node dashboard/sandcastles-bootstrap.mjs prepare-pkce` prints registration metadata only.
+2. `SANDCASTLES_BOOTSTRAP_ALLOWED=true node dashboard/sandcastles-bootstrap.mjs register-pkce` registers a dedicated public authorization-code/refresh client. Existing client IDs are reused, never overwritten; an incompatible pre-existing device client must be resolved explicitly rather than deleted silently.
+3. `SANDCASTLES_BOOTSTRAP_ALLOWED=true node dashboard/sandcastles-bootstrap.mjs authorize-pkce` creates a ten-minute link for the owner. The verifier and state stay in the private volume; only the authorization link is returned. Owner approves **Store Pulse Cloud Dashboard** using their Sandcastles account.
+4. The callback consumes matching state once before token exchange, validates exact redirect and client identity, and exchanges with S256 verifier. Failures retain previous tokens; consumed/expired links need a new authorization attempt. Success stores the dedicated tokens privately and displays a generic completion page.
+5. Verify authorization without printing tokens; enable the existing scheduled collector and check the next eligible read. Do not infer success from OAuth alone.
+
+Pending state lives beside the private auth file as `sandcastles.json.pkce`, with the same private file mode. Authorization bootstrap and collector refresh must not run concurrently; keep `SANDCASTLES_ENABLED` disabled during consent. No refresh/access token or provider error body is returned to the browser or diagnostics. Provider acceptance of this registration remains untested.
+
+Callback origin hardening: redirect validation is now bound to the existing service's platform-provided `RAILWAY_PUBLIC_DOMAIN` and the exact callback path. It rejects other HTTPS hosts, other Railway service hosts, ports, and missing domain configuration. Do not derive the allowed origin from incoming Host/forwarded headers. Verify the existing service publishes `RAILWAY_PUBLIC_DOMAIN` before preparation; no new domain or service is required.
+
+Application logging review: `src/main.js` delegates to `handleDashboard` before its MCP request/error handlers; `dashboard/http.mjs` delegates this callback before bearer-only routes. The callback catches exchange errors with fixed text, has no console calls, and sets no-store/no-referrer. The integration test invokes the actual dashboard handler with a sentinel authorization code and verifies neither response nor console output contains it. Railway edge/proxy access-log query handling is outside repository evidence and still needs deployment-side verification.
