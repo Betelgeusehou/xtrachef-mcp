@@ -18,6 +18,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 import * as store from "./store.js";
 import * as sync from "./sync.js";
+import * as pmix from "./pmix.js";
 
 const MODE = process.env.XTRACHEF_MCP_MODE || "stdio";
 
@@ -85,6 +86,14 @@ export function buildServer({ local = true } = {}) {
     "Total spend grouped by vendor, category, gl, or location, over the filtered range.",
     { group_by: z.enum(["vendor", "category", "gl", "location"]).optional(), ...filterShape },
     async (args) => json(store.spendSummary(args)));
+
+  server.tool("xtrachef_product_mix",
+    "Menu-item product mix per store (wash = Washington, mont = Montrose) from the newest xtraCHEF Product Mix By Item - Summary exports in the 'Product Mix' Drive folder. Each item is [name, qty sold, net sales, total recipe cost]; first/last are the report's date range (YYYY-MM-DD). Loaded each morning; set refresh=true to check Drive for a newer pair now.",
+    { refresh: z.boolean().optional().describe("Check the Drive folder for newer exports before answering (hosted only)") },
+    async ({ refresh }) => {
+      const load = refresh && !local ? await pmix.loadNow() : undefined;
+      return { content: [{ type: "text", text: JSON.stringify({ ...pmix.current(), ...(load ? { load } : {}) }) }] };
+    });
 
   return server;
 }
@@ -171,6 +180,12 @@ async function runHttp() {
       if (route === "/status" && req.method === "GET") {
         return send(res, 200, { ...store.status(), sync: sync.health() });
       }
+      if (route === "/pmix" && req.method === "GET") {
+        return send(res, 200, pmix.current());
+      }
+      if (route === "/pmix-sync" && req.method === "POST") {
+        return send(res, 200, await pmix.loadNow({ force: url.searchParams.get("force") === "true" }));
+      }
       if (route === "/sync" && req.method === "POST") {
         return send(res, 200, await sync.syncNow({ force: url.searchParams.get("force") === "true" }));
       }
@@ -184,6 +199,7 @@ async function runHttp() {
   srv.listen(port, "0.0.0.0", () => {
     startDashboardRunner();
     sync.startSyncScheduler();
+    pmix.startPmixScheduler();
     console.error(`xtrachef-mcp running (http) on :${port}  data dir: ${store.DATA_DIR}`);
     console.error(`  MCP endpoint: POST /<secret>/mcp   health: GET /health`);
   });
