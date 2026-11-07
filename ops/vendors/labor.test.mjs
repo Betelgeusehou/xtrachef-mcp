@@ -5,8 +5,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { deflateRawSync } from 'node:zlib';
 import { fileURLToPath } from 'node:url';
-import homebase, { apiCollect, parseLinkHeader, mapApiTimecard, SELECTORS as HB_SEL, ENDPOINTS as HB_EP } from './homebase.mjs';
-import toastPayroll, { classifyMoney, ENDPOINTS as TP_EP } from './toast-payroll.mjs';
+import homebase, { apiCollect, parseLinkHeader, mapApiTimecard, mapApiShift, SELECTORS as HB_SEL, ENDPOINTS as HB_EP } from './homebase.mjs';
+import toastPayroll, { classifyMoney, mapApiPayroll, ENDPOINTS as TP_EP } from './toast-payroll.mjs';
 import {
   businessDate, readXlsx, readZip, readTable, hours, num, mapHeaders, workweekStart, computeWeeklyOvertime, combineDateTime, isoInZone, zonedToUtc,
 } from './_labor-common.mjs';
@@ -159,15 +159,19 @@ test('homebase timesheets with an OT split in the file: used as-is, not recomput
   assert.equal(r.extra.ot_computed, false); assert.equal(r.tips_declared, 5);
 });
 
-test('homebase schedule CSV: "Last, First" names, overnight end, open shift, store mapping', () => {
-  const { schedule_shifts: s } = homebase.parseFile(read('homebase-schedule-2026-10-19.csv'), { filename: 'homebase-schedule-2026-10-19.csv' });
+test('homebase schedule CSV: "Last, First" names, overnight end, open shift skipped, store mapping', () => {
+  const res = homebase.parseFile(read('homebase-schedule-2026-10-19.csv'), { filename: 'homebase-schedule-2026-10-19.csv' });
+  const s = res.schedule_shifts;
   KEYS_OK('schedule_shifts', s);
-  assert.equal(s.length, 4);
+  assert.equal(s.length, 3);
+  assert.equal(res.stats.open_shifts_skipped, 1);
+  assert.deepEqual(Object.keys(res), ['labor_shifts', 'schedule_shifts'], 'stats not enumerable');
   const sat = s.find(r => r.employee === 'Dev Patel' && r.business_date === '2026-10-24');
   assert.equal(sat.end, '2026-10-25T02:00:00-05:00'); assert.equal(sat.scheduled_hours, 8); assert.equal(sat.scheduled_cost, 96);
+  assert.equal(sat.shift_id, 'Washington|dev patel|2026-10-24T23:00Z|barback');
   assert.equal(s.find(r => r.employee === 'Ana Ruiz').store, 'Montrose');
-  const open = s.find(r => r.employee === 'OPEN');
-  assert.equal(open.store, 'Washington'); assert.equal(open.scheduled_cost, null);
+  assert.ok(!s.some(r => r.employee === 'OPEN'));
+  close(s.reduce((a, r) => a + r.scheduled_hours, 0), 22);
 });
 
 test('homebase schedule grid layout (one column per day)', () => {
@@ -250,7 +254,9 @@ test('apiCollect: auth headers, pagination via Link, store mapping, business-dat
   assert.equal(ana.clock_in, '2026-10-23T18:00:00-05:00');
   assert.equal(r.labor_shifts.find(s => s.employee === 'Sam Test').business_date, '2026-10-24'); // 12:30 AM
   assert.equal(r.labor_shifts.find(s => s.employee === 'Dev Test').store, 'Washington');
-  assert.equal(r.schedule_shifts[0].shift_id, 'sh-9'); assert.equal(r.schedule_shifts[0].scheduled_cost, 80);
+  assert.equal(r.schedule_shifts[0].shift_id, 'Montrose|ana test|2026-10-23T23:00Z|bartender'); assert.equal(r.schedule_shifts[0].scheduled_cost, 80);
+  assert.equal(r.schedule_shifts[0].extra.homebase_shift_id, 9);
+  assert.equal(ana.shift_id, 'Montrose|ana test|2026-10-23T23:00Z'); assert.equal(ana.extra.homebase_timecard_id, 1);
 });
 
 test('apiCollect throws on non-2xx (no silent empty result)', async () => {
@@ -377,10 +383,14 @@ test('toast payroll register CSV -> runs + lines (Montrose)', () => {
   close(run.extra.employee_taxes, 450 + 315.29 + 73.74);
   close(run.extra.salaried_gross, 2307.69);
   close(run.extra.tips, 1400);
-  const ana = r.payroll_lines.find(l => l.employee === 'Ana Ruiz');
+  close(run.extra.wages_ex_tips, 5085.19 - 1400);
+  assert.equal(run.run_id, 'Montrose|2026-10-30|2026-10-12|2026-10-25');
+  assert.ok(r.payroll_lines.every(l => l.run_id === run.run_id));
+  const ana = r.payroll_lines.find(l => l.employee === 'Ana Ruiz #1001');
+  assert.equal(ana.extra.employee_name, 'Ana Ruiz'); assert.equal(ana.extra.employee_id, '1001');
   assert.deepEqual([ana.regular_hours, ana.ot_hours, ana.tips, ana.employer_taxes], [80, 8.5, 1400, 246.91]);
   close(ana.extra.employee_taxes, 358.06); close(ana.extra.gross_ex_tips, 927.5);
-  const mgr = r.payroll_lines.find(l => l.employee === 'Riley Chen');
+  const mgr = r.payroll_lines.find(l => l.employee === 'Riley Chen #1003');
   assert.equal(mgr.extra.salaried, true); assert.equal(mgr.regular_hours, null);
   assert.equal(mgr.extra.employer_benefits, 300); assert.equal(mgr.extra.employee_deductions, 75);
 });
@@ -392,6 +402,8 @@ test('toast payroll employee detail XLSX -> runs + lines (Washington)', () => {
   const [run] = r.payroll_runs;
   assert.deepEqual([run.store, run.pay_date, run.period_start, run.period_end], ['Washington', '2026-10-30', '2026-10-12', '2026-10-25']);
   close(run.gross_wages, 2289); close(run.employer_taxes, 191.52); close(run.benefits, 250); close(run.total_cost, 2730.52);
+  assert.equal(run.run_id, 'Washington|2026-10-30|2026-10-12|2026-10-25');
+  close(run.extra.wages_ex_tips, run.gross_wages - run.extra.tips);
   assert.ok(r.payroll_lines.some(l => l.employee.includes('&')), 'XML entities decoded');
 });
 
@@ -424,11 +436,121 @@ test('toast payroll session collect maps internal JSON from ctx.api', async () =
   const ana = r.payroll_lines.find(l => l.employee === 'Ana Ruiz');
   assert.deepEqual([ana.store, ana.regular_hours, ana.ot_hours, ana.employer_taxes, ana.extra.employee_taxes, ana.tips], ['Montrose', 40, 4, 68, 62, 200]);
   close(r.payroll_runs[0].total_cost, 1000 + 2307.69 + 68 + 176.54 + 300);
+  assert.equal(r.payroll_runs[0].run_id, 'Montrose|2026-10-30|2026-10-12|2026-10-25');
+  assert.equal(r.payroll_runs[0].extra.toast_run_id, 'p1'); assert.equal(ana.extra.toast_run_id, 'p1');
+  close(r.payroll_runs[0].extra.tips, 200); close(r.payroll_runs[0].extra.wages_ex_tips, 3307.69 - 200);
+  close(ana.extra.gross_ex_tips, 800);
   assert.ok(TP_EP.pastPayrolls('a', 'b').startsWith('/'));
 });
 
 test('toast payroll session collect rethrows when JSON fails and there is no page for the UI fallback', async () => {
   await assert.rejects(toastPayroll.collect({ log: () => {}, api: async () => { const e = Error('404'); e.status = 404; throw e; } }, { from: '2026-10-01', through: '2026-10-31' }), /404/);
+});
+
+// ---------------------------------------------------------------- review fixes
+
+test('toast payroll: session JSON and the file of the same payroll produce identical keys (no double count)', async () => {
+  const file = toastPayroll.parseFile(read('toast-payroll-register-montrose-2026-10-30.csv'), { filename: 'toast-payroll-register-montrose-2026-10-30.csv' });
+  const run = { id: 'tp-8812', checkDate: '2026-10-30', periodStart: '2026-10-12', periodEnd: '2026-10-25', locationName: 'Betelgeuse Betelgeuse - Montrose' };
+  const details = { employees: [
+    { employeeName: 'Ruiz, Ana', employeeNumber: '1001', grossPay: 2327.5, tips: 1400 },
+    { employeeName: 'Lee, Sam', employeeNumber: '1002', grossPay: 450 },
+    { employeeName: 'Chen, Riley', employeeNumber: '1003', payType: 'Salary', grossPay: 2307.69 },
+  ] };
+  const ctx = { log: () => {}, api: async url => (url.includes('/payrolls?') ? { payrolls: [run] } : details) };
+  const sess = await toastPayroll.collect(ctx, { from: '2026-10-01', through: '2026-10-31' });
+  const runKeys = rs => rs.map(r => `${r.vendor}|${r.run_id}`).sort();
+  const lineKeys = ls => ls.map(l => `${l.vendor}|${l.run_id}|${l.employee}`).sort();
+  assert.deepEqual(runKeys(sess.payroll_runs), runKeys(file.payroll_runs));
+  assert.deepEqual(lineKeys(sess.payroll_lines), lineKeys(file.payroll_lines));
+  assert.equal(sess.payroll_runs[0].extra.toast_run_id, 'tp-8812');
+  // Upserting both into the store leaves one run and three lines.
+  const store = await import('../core/store.mjs');
+  store.close(); store.open(':memory:');
+  try {
+    store.upsertResult(file, { mode: 'inbox' });
+    store.upsertResult(sess, { mode: 'session' });
+    assert.equal(store.query('payroll_runs').length, 1);
+    assert.equal(store.query('payroll_lines').length, 3);
+  } finally { store.close(); }
+});
+
+test('toast payroll: same-name employees with different ids stay separate; no id -> name only', () => {
+  const head = 'Location: Betelgeuse Betelgeuse - Montrose\nCheck Date: 10/30/2026\nPay Period: 10/12/2026 - 10/25/2026\n';
+  const csv = head + 'Employee,Employee ID,Regular Hours,Gross Pay,Cash Tips\n"Lee, Sam",1002,10,100,10\n"Lee, Sam",1077,20,200,0\n';
+  const r = toastPayroll.parseFile(Buffer.from(csv), { filename: 'toast payroll register montrose.csv' });
+  assert.deepEqual(r.payroll_lines.map(l => l.employee).sort(), ['Sam Lee #1002', 'Sam Lee #1077']);
+  assert.equal(r.payroll_runs[0].employee_count, 2);
+  close(r.payroll_runs[0].extra.wages_ex_tips, 290); close(r.payroll_runs[0].extra.tips, 10);
+  const noIdCsv = head + 'Employee,Regular Hours,Gross Pay,Cash Tips\n"Lee, Sam",10,100,10\n';
+  const noId = toastPayroll.parseFile(Buffer.from(noIdCsv), { filename: 'toast payroll register montrose.csv' });
+  assert.equal(noId.payroll_lines[0].employee, 'Sam Lee');
+  const api = mapApiPayroll({ id: 'x', checkDate: '2026-10-30', periodStart: '2026-10-12', periodEnd: '2026-10-25', locationName: 'Montrose' },
+    { employees: [{ employeeName: 'Sam Lee', grossPay: 1 }, { employeeName: 'Sam Lee', employeeId: 'e9', grossPay: 2 }] });
+  assert.deepEqual(api.map(l => l.employee), ['Sam Lee', 'Sam Lee #e9']);
+});
+
+test('homebase: API timecard and Timesheets CSV row for the same shift share a shift_id', () => {
+  const csv = 'First Name,Last Name,Payroll ID,Role,Location,Date,Clock In,Clock Out,Total Paid Hours,Wage Rate\n' +
+    'Ana,Ruiz,1001,Bartender,Betelgeuse Betelgeuse - Montrose,10/23/2026,6:00 PM,2:30 AM,8.50,$10.00\n';
+  const [fileRec] = homebase.parseFile(Buffer.from(csv), { filename: 'homebase-timesheets.csv' }).labor_shifts;
+  const apiRec = mapApiTimecard({ id: 555, payroll_id: '1001', first_name: 'Ana', last_name: 'Ruiz', role: 'Bartender', clock_in: '2026-10-23T23:00:42Z', clock_out: '2026-10-24T07:30:00Z', labor: { regular_hours: 8.5, paid_hours: 8.5, costs: 85, wage_rate: 10 } }, LOCS[0]);
+  assert.equal(fileRec.shift_id, 'Montrose|id:1001|2026-10-23T23:00Z');
+  assert.equal(apiRec.shift_id, fileRec.shift_id);
+  assert.equal(apiRec.extra.homebase_timecard_id, 555);
+  // Without a payroll id both fall back to the normalized name.
+  const noId = mapApiTimecard({ id: 556, first_name: ' Ana ', last_name: 'RUIZ', clock_in: '2026-10-23T23:00:00Z', labor: {} }, LOCS[0]);
+  assert.equal(noId.shift_id, 'Montrose|ana ruiz|2026-10-23T23:00Z');
+});
+
+test('homebase: API shift and Schedule CSV row for the same shift share a shift_id; API open shifts skipped', async () => {
+  const sched = 'Employee,Role,Location,Date,Start,End,Scheduled Hours\n"Ruiz, Ana",Bartender,Betelgeuse Betelgeuse - Montrose,10/23/2026,6:00 PM,2:00 AM,8\n';
+  const [fileRec] = homebase.parseFile(Buffer.from(sched), { filename: 'homebase-schedule.csv' }).schedule_shifts;
+  const apiRec = mapApiShift({ id: 9, first_name: 'Ana', last_name: 'Ruiz', role: 'Bartender', start_at: '2026-10-23T23:00:00Z', end_at: '2026-10-24T07:00:00Z', labor: { scheduled_hours: 8 } }, LOCS[0]);
+  assert.equal(apiRec.shift_id, fileRec.shift_id);
+  assert.equal(fileRec.shift_id, 'Montrose|ana ruiz|2026-10-23T23:00Z|bartender');
+  const fetchImpl = fakeFetch({
+    '/api/public/locations': () => ({ body: [LOCS[0]] }),
+    '/api/public/locations/u-mon/timecards': () => ({ body: [] }),
+    '/api/public/locations/u-mon/shifts': () => ({ body: [
+      { id: 1, first_name: 'Ana', last_name: 'Ruiz', role: 'Bartender', start_at: '2026-10-23T23:00:00Z', end_at: '2026-10-24T07:00:00Z', labor: { scheduled_hours: 8 } },
+      { id: 2, open: true, role: 'Bartender', start_at: '2026-10-24T01:00:00Z', end_at: '2026-10-24T07:00:00Z', labor: { scheduled_hours: 6 } },
+    ] }),
+  });
+  const r = await apiCollect({ apiKey: 'k' }, { from: '2026-10-19', through: '2026-10-25' }, { fetchImpl, sleep: async () => {} });
+  assert.equal(r.schedule_shifts.length, 1);
+  assert.equal(r.stats.open_shifts_skipped, 1);
+});
+
+test('homebase CSV: computed OT flags rows in workweeks the file does not fully cover', () => {
+  // File covers Wed 10/21 .. Mon 10/26: week of 10/19 starts before it, week of 10/26 ends after it.
+  const rows = ['10/21/2026', '10/22/2026', '10/25/2026', '10/26/2026'].map(d => `Ana,Ruiz,1001,Betelgeuse Betelgeuse - Montrose,${d},4:00 PM,12:00 AM,8.00,$10.00`);
+  const csv = 'First Name,Last Name,Payroll ID,Location,Date,Clock In,Clock Out,Total Paid Hours,Wage Rate\n' + rows.join('\n') + '\n';
+  const res = homebase.parseFile(Buffer.from(csv), { filename: 'homebase-timesheets.csv' });
+  assert.ok(res.labor_shifts.every(r => r.extra.ot_partial_week === true));
+  assert.equal(res.stats.ot_partial_week_rows, 4);
+  // The 10/19 fixture covers Mon 10/19 .. Sun 10/25 exactly: not partial.
+  const full = homebase.parseFile(read('homebase-timesheets-2026-10-19.csv'), { filename: 'homebase-timesheets-2026-10-19.csv' });
+  assert.ok(full.labor_shifts.filter(r => r.extra.ot_computed).every(r => r.extra.ot_partial_week === false));
+  // Files with their own OT split are not flagged.
+  const own = homebase.parseFile(Buffer.from('Employee,Location,Date,Clock In,Clock Out,Regular Hours,Overtime Hours\nAna Ruiz,Betelgeuse Betelgeuse - Montrose,10/23/2026,6:00 PM,2:30 AM,6,2.5\n'), { filename: 'Homebase timesheets.csv' });
+  assert.equal(own.labor_shifts[0].extra.ot_partial_week, undefined);
+});
+
+test('xlsx/zip reader rejects oversized entries (zip bomb guard)', () => {
+  // Declared size over the 50 MB limit is refused before inflating.
+  const big = buildZip([['xl/worksheets/sheet1.xml', '<worksheet/>', 8]]);
+  const cdOff = big.readUInt32LE(big.length - 22 + 16);
+  const lied = Buffer.from(big); lied.writeUInt32LE(60 * 1024 * 1024, cdOff + 24);
+  assert.throws(() => readZip(lied), /declares 62914560 bytes uncompressed/);
+  // An entry that inflates past its (small) declared size is refused too.
+  const bomb = buildZip([['xl/worksheets/sheet1.xml', 'A'.repeat(200000), 8]]);
+  const off2 = bomb.readUInt32LE(bomb.length - 22 + 16);
+  const small = Buffer.from(bomb); small.writeUInt32LE(1000, off2 + 24);
+  assert.throws(() => readZip(small), /inflates past its declared size 1000/);
+  assert.throws(() => readTable(small, { filename: 'x.xlsx' }), /zip:/);
+  // Honest entries still read.
+  assert.equal(readZip(bomb).get('xl/worksheets/sheet1.xml').length, 200000);
 });
 
 test('adapter shapes match the contract', () => {

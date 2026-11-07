@@ -362,6 +362,8 @@ export function finalizePayouts(vendor, partials, res = emptyResult()) {
     if (!rec.payout_date) warnings.push(`no payout date${p.line ? ` (line ${p.line})` : ''}`);
     const prev = byId.get(rec.payout_id);
     if (prev) { // payout ids are per store; the same id on two rows -> sum
+      // Anything built partly from order rows stays flagged so reconciliation can exclude it.
+      if (rec.extra.derived_from_orders) prev.extra.derived_from_orders = true;
       for (const k of ['gross_sales', 'total_fees', 'adjustments', 'net_payout']) if (rec[k] !== null) prev[k] = round2((prev[k] || 0) + rec[k]);
       prev.period_start = [prev.period_start, rec.period_start].filter(Boolean).sort()[0] || null;
       prev.period_end = [prev.period_end, rec.period_end].filter(Boolean).sort().at(-1) || null;

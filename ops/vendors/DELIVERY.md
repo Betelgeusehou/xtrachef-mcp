@@ -45,6 +45,15 @@ All three adapters export the README contract plus `handoffDomains`, list
 - **IDs.** Raw vendor IDs (the store key is already `vendor + order_id`).
   Uber Eats uses the **Workflow ID** (unique UUID); the short tablet Order ID is
   kept in `extra.display_order_id`.
+- **Same `order_id` on every path.** Session JSON and CSV files go through the
+  same `mapOrderRow` and alias list per vendor, so an order collected both ways
+  upserts onto one row (checked 2026-11-07, covered by tests):
+  - DoorDash: `doordash_order_id` (JSON `doordash_order_id`/`doordashOrderId`, CSV "DoorDash order ID").
+  - Uber Eats: Workflow ID (JSON `workflowId`, CSV "Workflow ID"). A JSON item
+    without a workflow ID throws `shape changed` instead of falling back to the
+    short display ID, which would key the order differently from the file.
+  - Grubhub: order number (JSON `order_number`, CSV "Order Number").
+  `payout_id` is the vendor's payout/deposit id on both paths as well.
 
 ### Session mode
 
@@ -71,6 +80,9 @@ rows (`extra.derived_from_orders: true`). A file covering part of a payout
 period gives a partial payout. The store upserts on `payout_id`, so whichever
 file lands last wins: schedule the real payout/deposit report to arrive after
 the order-level one, or filter on `extra.derived_from_orders` when it matters.
+Every derived payout carries `extra.derived_from_orders: true`, including one
+merged with a real payout row of the same id in the same result; the tools layer
+excludes these from payout reconciliation.
 
 ---
 

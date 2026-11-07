@@ -11,6 +11,7 @@ import ubereats, * as ue from './ubereats.mjs';
 import grubhub, * as gh from './grubhub.mjs';
 import {
   money, moneyObject, resolveTime, businessDate, addDays, chicagoToIso, toDate, csvRows, expectedPayout, dateWindows, normHeader,
+  finalizePayouts, derivePayouts,
 } from './_delivery-common.mjs';
 import { KINDS } from '../core/store.mjs';
 
@@ -522,4 +523,75 @@ test('ENDPOINTS / SELECTORS configs exist and are labelled', () => {
     const src = fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), f), 'utf8');
     assert.ok(src.includes(`// UNVERIFIED until confirmed with: npm run ops:record ${f.replace('.mjs', '')}`), f);
   }
+});
+
+// ------------------------------------------------- cross-path natural keys --
+describe('session and file paths key the same order identically', () => {
+  const range = { from: '2026-11-02', through: '2026-11-08' };
+  const ids = res => new Set(res.delivery_orders.map(o => o.order_id));
+  const check = (sess, file) => {
+    const s = ids(sess), f = ids(file);
+    assert.ok(s.size > 0);
+    for (const id of s) assert.ok(f.has(id), `session order ${id} not keyed the same in the file`);
+  };
+  test('doordash: doordash_order_id', async () => {
+    const api = json('doordash-api.json');
+    const ctx = fakeCtx(u => {
+      if (u.pathname.endsWith('/stores')) return api.stores;
+      const store = u.searchParams.get('store_id');
+      if (u.pathname.endsWith('/transactions')) return api.transactions[store][u.searchParams.get('cursor') === 'c2' ? 1 : 0];
+      if (u.pathname.endsWith('/payouts')) return api.payouts[store];
+    });
+    check(await doordash.collect(ctx, range), doordash.parseFile(fx('doordash-transactions.csv'), { filename: 'doordash_transactions.csv' }));
+  });
+  test('ubereats: Workflow ID; JSON item with only the display Order ID is a shape change', async () => {
+    const api = json('ubereats-api.json');
+    const route = (u, body) => {
+      if (u.pathname.endsWith('/getStores')) return api.stores;
+      const store = body.storeUUIDs?.[0];
+      if (u.pathname.endsWith('/getPaymentDetails')) return api.paymentDetails[store][body.cursor === 'p2' ? 1 : 0];
+      if (u.pathname.endsWith('/getPayouts')) return api.payouts[store];
+    };
+    const sess = await ubereats.collect(fakeCtx(route), range);
+    check(sess, ubereats.parseFile(fx('ubereats-payment-details.csv'), { filename: 'payment_details.csv' }));
+    assert.ok([...ids(sess)].every(id => id.startsWith('wf-')));
+    const noWf = fakeCtx((u, b) => (u.pathname.endsWith('/getStores') ? api.stores : { data: { orders: [{ orderId: '3F2A1', totalPayout: 1 }] } }));
+    await assert.rejects(ubereats.collect(noWf, range), /paymentDetails: item missing workflowId/);
+  });
+  test('grubhub: order number', async () => {
+    const api = json('grubhub-api.json');
+    const route = u => {
+      const m = u.pathname.match(/restaurants\/([^/]+)\/reports\/financials\/(\w+)/);
+      if (!m) return u.pathname.endsWith('/restaurants') ? api.restaurants : undefined;
+      return api[m[2]][m[1]];
+    };
+    const page = { evaluate: async () => 'abc.def.ghi', url: () => 'https://restaurant.grubhub.com/dashboard' };
+    check(await grubhub.collect(fakeCtx(route, { page }), range), grubhub.parseFile(fx('grubhub-transactions.csv'), { filename: 'grubhub_transactions.csv' }));
+  });
+});
+
+describe('derived payouts are always flagged', () => {
+  test('ubereats and grubhub order files: every payout has derived_from_orders', () => {
+    for (const res of [
+      ubereats.parseFile(fx('ubereats-payment-details.csv'), { filename: 'payment_details.csv' }),
+      grubhub.parseFile(fx('grubhub-transactions.csv'), { filename: 'grubhub_transactions.csv' }),
+    ]) {
+      assert.ok(res.delivery_payouts.length > 0);
+      for (const p of res.delivery_payouts) assert.equal(p.extra.derived_from_orders, true, p.payout_id);
+    }
+  });
+  test('payout files are not flagged', () => {
+    for (const res of [
+      ubereats.parseFile(fx('ubereats-payout-summary.csv'), { filename: 'payout_summary.csv' }),
+      grubhub.parseFile(fx('grubhub-deposits.csv'), { filename: 'grubhub_deposits.csv' }),
+    ]) for (const p of res.delivery_payouts) assert.equal(p.extra.derived_from_orders, undefined, p.payout_id);
+  });
+  test('a derived partial merged into a same-id row keeps the flag', () => {
+    const real = { payout_id: 'X1', store_label: 'Betelgeuse - Montrose', payout_date: '2026-11-09', gross_sales: 10, total_fees: 1, adjustments: 0, net_payout: 9, extra: {} };
+    const res = finalizePayouts('ubereats', [real, ...derivePayouts('ubereats', [
+      { store: 'Montrose', business_date: '2026-11-02', subtotal: 5, payout: 4, commission: 1, extra: { payout_id: 'X1', payout_date: '2026-11-09' } },
+    ])]);
+    assert.equal(res.delivery_payouts.length, 1);
+    assert.equal(res.delivery_payouts[0].extra.derived_from_orders, true);
+  });
 });
