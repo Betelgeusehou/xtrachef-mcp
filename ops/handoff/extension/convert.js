@@ -2,14 +2,22 @@
 // No chrome.* APIs in here.
 
 // Default vendor list, used when the server's /ops/handoff/vendors list can't be fetched.
-// ids must match ops/vendors/<id>.mjs; domains are registrable domains whose cookies get pushed.
+// ids must match ops/vendors/<id>.mjs. domains are the hosts whose cookies get pushed: each host's own
+// cookies, its subdomains' cookies, and parent-domain cookies the browser sends to it (e.g. '.uber.com'
+// for auth.uber.com). Uber and Toast are narrowed to the portal + sign-in hosts, not all of uber.com /
+// toasttab.com. Keep in step with manifest.json host_permissions: Chrome only returns cookies for hosts
+// the extension has permission for.
 export const DEFAULT_VENDORS = [
   { id: 'doordash', name: 'DoorDash Merchant', loginUrl: 'https://merchant-portal.doordash.com/', domains: ['doordash.com'] },
-  { id: 'ubereats', name: 'Uber Eats Manager', loginUrl: 'https://merchants.ubereats.com/', domains: ['ubereats.com', 'uber.com'] },
+  { id: 'ubereats', name: 'Uber Eats Manager', loginUrl: 'https://merchants.ubereats.com/', domains: ['merchants.ubereats.com', 'auth.uber.com'] },
   { id: 'grubhub', name: 'Grubhub for Restaurants', loginUrl: 'https://restaurant.grubhub.com/', domains: ['grubhub.com'] },
   { id: 'homebase', name: 'Homebase', loginUrl: 'https://app.joinhomebase.com/', domains: ['joinhomebase.com'] },
-  { id: 'toast-payroll', name: 'Toast Payroll', loginUrl: 'https://payroll.toasttab.com/', domains: ['toasttab.com'] },
+  { id: 'toast-payroll', name: 'Toast Payroll', loginUrl: 'https://payroll.toasttab.com/', domains: ['payroll.toasttab.com', 'auth.toasttab.com'] },
 ];
+
+// chrome.cookies.getAll queries for one host: {domain} returns the host's and its subdomains' cookies,
+// {url} adds the parent-domain cookies the browser would send to it.
+export const cookieQueries = host => [{ domain: host }, { url: `https://${host}/` }];
 
 const SAME_SITE = { no_restriction: 'None', lax: 'Lax', strict: 'Strict', unspecified: 'Lax' };
 

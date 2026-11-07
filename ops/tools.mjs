@@ -96,41 +96,56 @@ export async function emptyState(kinds, filters = {}, deps = {}) {
 }
 
 // ---------------------------------------------------------------- delivery
+const DERIVED_NOTE = 'payouts derived from order rows — reconcile against bank deposits';
 // Pure math over delivery_orders + delivery_payouts rows.
 export function computeDelivery(orders, payouts) {
   const groups = new Map();
   const key = (v, s) => `${v}\u0000${s || 'Unknown'}`;
   const g = (v, s) => {
     const k = key(v, s);
-    if (!groups.has(k)) groups.set(k, { vendor: v, store: s || 'Unknown', orders: 0, cancelled: 0, subtotal: 0, tax: 0, tip: 0, commission: 0, processing_fee: 0, marketing_fee: 0, error_charges: 0, adjustments: 0, net_payout: 0, payouts_reported: 0, payout_count: 0 });
+    if (!groups.has(k)) groups.set(k, { vendor: v, store: s || 'Unknown', orders: 0, cancelled: 0, subtotal: 0, tax: 0, tip: 0, commission: 0, processing_fee: 0, marketing_fee: 0, error_charges: 0, adjustments: 0, net_payout: 0, payouts_reported: 0, payout_count: 0, derived_payouts: 0, derived_payout_count: 0 });
     return groups.get(k);
   };
   for (const o of orders) {
     const x = g(o.vendor, o.store);
-    if (/cancel/i.test(o.status || '')) x.cancelled++; else x.orders++;
-    for (const f of ['subtotal', 'tax', 'tip', 'commission', 'processing_fee', 'marketing_fee', 'error_charges', 'adjustments']) x[f] += num(o[f]);
+    // A cancelled order isn't a sale: its subtotal/tax/tip/fees stay out of gross, take rate and
+    // avg ticket. Money that actually moved on it (partial payout, error charges, adjustments) still counts.
+    const cancelled = /cancel/i.test(o.status || '');
+    if (cancelled) x.cancelled++; else x.orders++;
+    const fields = cancelled ? ['error_charges', 'adjustments'] : ['subtotal', 'tax', 'tip', 'commission', 'processing_fee', 'marketing_fee', 'error_charges', 'adjustments'];
+    for (const f of fields) x[f] += num(o[f]);
+    if (cancelled) x.cancelled_error_charges = (x.cancelled_error_charges || 0) + num(o.error_charges);
     x.net_payout += num(o.payout);
   }
   for (const p of payouts) {
     const x = g(p.vendor, p.store);
+    // Payout rows a vendor adapter rebuilt from the order rows themselves can't reconcile against
+    // those same orders; keep them out and point at bank deposits instead.
+    if (p.extra?.derived_from_orders) { x.derived_payouts += num(p.net_payout); x.derived_payout_count++; continue; }
     x.payouts_reported += num(p.net_payout);
     x.payout_count++;
   }
   const finish = x => {
     // Fees are the vendor's cut (always charged as positive amounts); adjustments are reported separately because they can go either way.
     const fees = x.commission + x.processing_fee + x.marketing_fee + x.error_charges;
+    // Take rate is over completed orders only: error charges on cancelled orders are a real cost
+    // (in total_fees) but have no subtotal behind them, so they'd inflate the rate.
+    const saleFees = fees - (x.cancelled_error_charges || 0);
     const out = {
       vendor: x.vendor, store: x.store, orders: x.orders, cancelled: x.cancelled,
       gross_subtotal: r2(x.subtotal), tax: r2(x.tax), tip: r2(x.tip),
       commission: r2(x.commission), processing_fee: r2(x.processing_fee), marketing: r2(x.marketing_fee),
       error_charges: r2(x.error_charges), adjustments: r2(x.adjustments),
       total_fees: r2(fees), net_payout: r2(x.net_payout),
-      effective_take_rate_pct: pct(fees, x.subtotal),
+      effective_take_rate_pct: pct(saleFees, x.subtotal),
       avg_ticket: x.orders ? r2(x.subtotal / x.orders) : null,
-      reconciliation: {
-        order_payouts: r2(x.net_payout), payouts_reported: r2(x.payouts_reported), payout_count: x.payout_count,
-        difference: r2(x.payouts_reported - x.net_payout),
-      },
+      reconciliation: x.payout_count || !x.derived_payout_count
+        ? {
+          order_payouts: r2(x.net_payout), payouts_reported: r2(x.payouts_reported), payout_count: x.payout_count,
+          difference: r2(x.payouts_reported - x.net_payout),
+          ...(x.derived_payout_count ? { derived_payouts_excluded: x.derived_payout_count } : {}),
+        }
+        : { order_payouts: r2(x.net_payout), payouts_reported: null, payout_count: 0, difference: null, derived_payouts_excluded: x.derived_payout_count, note: DERIVED_NOTE },
     };
     return out;
   };
@@ -148,11 +163,13 @@ export async function deliverySummary({ from, through, store, vendor } = {}, dep
   const payouts = s.query('delivery_payouts', f);
   if (!orders.length && !payouts.length) return { from, through, ...(await emptyState(['delivery_orders', 'delivery_payouts'], f, deps)) };
   const { rows, totals } = computeDelivery(orders, payouts);
+  const derivedVendors = [...new Set(payouts.filter(p => p.extra?.derived_from_orders).map(p => p.vendor))].sort();
   return {
     from, through, store: store || 'all', vendor: vendor || 'all',
     notes: [
-      'total_fees = commission + processing_fee + marketing + error_charges; effective_take_rate_pct = total_fees / gross_subtotal.',
+      'total_fees = commission + processing_fee + marketing + error_charges. gross_subtotal, avg_ticket and effective_take_rate_pct (fees on completed orders / gross_subtotal) exclude cancelled orders; their payout, error charges and adjustments still count.',
       'reconciliation compares the sum of per-order payouts (orders by business_date) with payouts deposited (by payout_date) in the same range; a nonzero difference at range edges is usually timing, not missing money.',
+      ...(derivedVendors.length ? [`${derivedVendors.join(', ')}: ${DERIVED_NOTE}. Those payout rows are left out of payouts_reported.`] : []),
     ],
     by_vendor_store: rows, totals,
   };
@@ -177,11 +194,14 @@ export function computeLabor(shifts, schedule, { top = 5 } = {}) {
   for (const r of shifts) {
     if (chosen.get(r.store) !== r.vendor) continue;
     const x = day(r.store, r.business_date);
-    const reg = num(r.regular_hours), o = num(r.ot_hours);
-    const hrs = has(r.regular_hours) || has(r.ot_hours) ? reg + o : hoursBetween(r.clock_in, r.clock_out);
+    // Hours come from regular_hours when the vendor reports it, else from the punch times.
+    // ot_hours alone (often 0) says nothing about total hours, so it never selects the branch.
+    const o = num(r.ot_hours);
+    const hrs = has(r.regular_hours) ? num(r.regular_hours) + o : hoursBetween(r.clock_in, r.clock_out);
+    const reg = Math.max(0, hrs - o);
     x.actual_hours += hrs; x.ot_hours += o; x.shifts++;
     if (has(r.labor_cost)) x.actual_cost += num(r.labor_cost);
-    else if (has(r.wage_rate)) { x.actual_cost += num(r.wage_rate) * ((has(r.regular_hours) || has(r.ot_hours) ? reg : hrs) + 1.5 * o); x.cost_estimated = true; }
+    else if (has(r.wage_rate)) { x.actual_cost += num(r.wage_rate) * (reg + 1.5 * o); x.cost_estimated = true; }
     if (o > 0) { const k = `${r.store}\u0000${r.employee}`; const e = ot.get(k) || { store: r.store, employee: r.employee, ot_hours: 0, shifts_with_ot: 0 }; e.ot_hours += o; e.shifts_with_ot++; ot.set(k, e); }
   }
   for (const r of schedule) {
@@ -226,33 +246,52 @@ export async function laborSummary({ from, through, store, vendor } = {}, deps =
 }
 
 // ---------------------------------------------------------------- payroll
+// Tips pass through payroll but aren't wages the restaurant pays for, so burden % is taken over
+// wages excluding tips: (employer_taxes + benefits) / wages_ex_tips. Source of wages_ex_tips, in order:
+// run.extra.wages_ex_tips; gross_wages - (run.extra.tips or the run's payroll_lines tips); gross_wages.
 export function computePayroll(runs, lines = []) {
+  const notes = [];
   const lineAgg = new Map();
   for (const l of lines) {
     const k = `${l.vendor}\u0000${l.run_id}`;
-    const a = lineAgg.get(k) || { employees: new Set(), ot_hours: 0, regular_hours: 0, tips: 0 };
+    const a = lineAgg.get(k) || { employees: new Set(), ot_hours: 0, regular_hours: 0, tips: 0, hasTips: false };
     a.employees.add(l.employee); a.ot_hours += num(l.ot_hours); a.regular_hours += num(l.regular_hours); a.tips += num(l.tips);
+    if (has(l.tips)) a.hasTips = true;
     lineAgg.set(k, a);
   }
+  const fallback = [];
   const out = runs.map(r => {
     const gross = num(r.gross_wages), taxes = num(r.employer_taxes), ben = num(r.benefits);
     const total = has(r.total_cost) ? num(r.total_cost) : gross + taxes + ben;
     const la = lineAgg.get(`${r.vendor}\u0000${r.run_id}`);
+    const ex = r.extra || {};
+    let wagesEx, tips, wagesSource;
+    if (has(ex.wages_ex_tips)) { wagesEx = num(ex.wages_ex_tips); tips = has(ex.tips) ? num(ex.tips) : gross - wagesEx; wagesSource = 'run'; }
+    else if (has(ex.tips)) { tips = num(ex.tips); wagesEx = gross - tips; wagesSource = 'run tips'; }
+    else if (la?.hasTips) { tips = la.tips; wagesEx = gross - tips; wagesSource = 'payroll_lines tips'; }
+    else { tips = null; wagesEx = gross; wagesSource = 'gross_wages (tips unknown)'; fallback.push(r.run_id); }
     return {
       vendor: r.vendor, store: r.store || 'Unknown', run_id: r.run_id, pay_date: r.pay_date, period_start: r.period_start, period_end: r.period_end,
       employee_count: has(r.employee_count) ? num(r.employee_count) : (la ? la.employees.size : null),
-      gross_wages: r2(gross), employer_taxes: r2(taxes), benefits: r2(ben), total_cost: r2(total),
-      employer_burden_pct: gross ? r2(((total - gross) / gross) * 100) : null,
-      ...(la ? { regular_hours: r2(la.regular_hours), ot_hours: r2(la.ot_hours), tips: r2(la.tips) } : {}),
+      gross_wages: r2(gross), tips: tips === null ? null : r2(tips), wages_ex_tips: r2(wagesEx), wages_ex_tips_source: wagesSource,
+      employer_taxes: r2(taxes), benefits: r2(ben), total_cost: r2(total),
+      employer_burden_pct: wagesEx ? r2(((taxes + ben) / wagesEx) * 100) : null,
+      ...(la ? { regular_hours: r2(la.regular_hours), ot_hours: r2(la.ot_hours) } : {}),
     };
   }).sort((a, b) => String(a.pay_date).localeCompare(String(b.pay_date)) || a.store.localeCompare(b.store));
+  const sum = (rs, k) => rs.reduce((a, r) => a + (r[k] || 0), 0);
   const tot = rs => {
-    const g = rs.reduce((a, r) => a + r.gross_wages, 0), t = rs.reduce((a, r) => a + r.total_cost, 0);
-    return { runs: rs.length, gross_wages: r2(g), employer_taxes: r2(rs.reduce((a, r) => a + r.employer_taxes, 0)), benefits: r2(rs.reduce((a, r) => a + r.benefits, 0)), total_cost: r2(t), employer_burden_pct: g ? r2(((t - g) / g) * 100) : null };
+    const w = sum(rs, 'wages_ex_tips'), tb = sum(rs, 'employer_taxes') + sum(rs, 'benefits');
+    return {
+      runs: rs.length, gross_wages: r2(sum(rs, 'gross_wages')), tips: r2(sum(rs, 'tips')), wages_ex_tips: r2(w),
+      employer_taxes: r2(sum(rs, 'employer_taxes')), benefits: r2(sum(rs, 'benefits')), total_cost: r2(sum(rs, 'total_cost')),
+      employer_burden_pct: w ? r2((tb / w) * 100) : null,
+    };
   };
   const byStore = {};
   for (const st of [...new Set(out.map(r => r.store))].sort()) byStore[st] = tot(out.filter(r => r.store === st));
-  return { runs: out, by_store: byStore, totals: out.length ? tot(out) : null };
+  if (fallback.length) notes.push(`Tips unknown for run(s) ${fallback.join(', ')}: wages_ex_tips = gross_wages there, so burden % may be understated if gross includes tips.`);
+  return { runs: out, by_store: byStore, totals: out.length ? tot(out) : null, notes };
 }
 
 export async function payrollSummary({ from, through, store } = {}, deps = {}) {
@@ -262,20 +301,25 @@ export async function payrollSummary({ from, through, store } = {}, deps = {}) {
   if (!runs.length) return { from, through, ...(await emptyState(['payroll_runs'], { from, through, store }, deps)) };
   const ids = new Set(runs.map(r => `${r.vendor}\u0000${r.run_id}`));
   const lines = s.query('payroll_lines', { limit: 500000 }).filter(l => ids.has(`${l.vendor}\u0000${l.run_id}`));
+  const { notes, ...rest } = computePayroll(runs, lines);
   return {
     from, through, store: store || 'all',
-    notes: ['employer_burden_pct = (total_cost - gross_wages) / gross_wages. Runs are selected by pay_date.'],
-    ...computePayroll(runs, lines),
+    notes: ['employer_burden_pct = (employer_taxes + benefits) / wages_ex_tips. Tips are shown separately and are not counted as wages. Runs are selected by pay_date.', ...notes],
+    ...rest,
   };
 }
 
 // ---------------------------------------------------------------- sync
+export const DISABLED = 'ops layer disabled (set OPS_ENABLED=true)';
 export async function syncNow({ vendor, from, through } = {}, deps = {}) {
+  if ((deps.enabled ?? process.env.OPS_ENABLED === 'true') !== true) return { ok: false, disabled: true, error: DISABLED };
   const runner = deps.runner ?? await mod('./core/runner.mjs');
   const range = from || through ? { from, through } : undefined;
   const out = {};
   if (!runner) out.collect = { ok: false, error: 'ops/core/runner.mjs not deployed yet' };
-  else if (vendor) out.collect = await runner.runVendor(vendor, { range });
+  // runVendorLocked shares runAll's lock, so a one-vendor sync never runs a second browser alongside it.
+  else if (vendor && typeof runner.runVendorLocked !== 'function') out.collect = { ok: false, error: 'ops/core/runner.mjs has no runVendorLocked yet (redeploy)' };
+  else if (vendor) out.collect = await runner.runVendorLocked(vendor, { range });
   else out.collect = await runner.runAll({ range });
   // runAll sweeps the inbox itself (returns {at, ok, results, inbox}); only sweep here if it didn't.
   if (!vendor && !(out.collect && 'inbox' in out.collect)) {
@@ -323,7 +367,11 @@ export function registerOpsTools(server, z) {
   server.tool('ops_sync_now',
     'Run collectors now. With vendor: just that vendor. Without: every enabled vendor plus a sweep of the vendor report emails inbox. Optional from/through limit the date range collected.',
     { vendor: z.string().optional().describe('Adapter id; omit for all'), from: date('YYYY-MM-DD').optional(), through: date('YYYY-MM-DD').optional() },
-    safe(args => syncNow(args)));
+    safe(async args => {
+      const r = await syncNow(args);
+      if (r?.disabled) throw Error(DISABLED);
+      return r;
+    }));
 
   server.tool('delivery_summary',
     'Third-party delivery economics per vendor x store: orders, gross subtotal, commission, marketing, error charges, adjustments, net payout, effective take rate %, plus reconciliation of per-order payouts vs deposits reported.',
@@ -336,7 +384,7 @@ export function registerOpsTools(server, z) {
     safe(args => laborSummary(args)));
 
   server.tool('payroll_summary',
-    'Payroll runs with pay_date in range: gross wages, employer taxes, benefits, total cost and employer burden % ((total_cost - gross_wages) / gross_wages), per run, per store and overall.',
+    'Payroll runs with pay_date in range: gross wages, tips, wages excluding tips, employer taxes, benefits, total cost and employer burden % ((employer_taxes + benefits) / wages_ex_tips), per run, per store and overall.',
     { from: date('Pay date from, YYYY-MM-DD'), through: date('Pay date through, YYYY-MM-DD'), store: storeArg },
     safe(args => payrollSummary(args)));
 }
