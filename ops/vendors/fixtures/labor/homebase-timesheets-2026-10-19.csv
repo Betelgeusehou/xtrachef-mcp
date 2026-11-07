@@ -1,0 +1,15 @@
+Timesheets,,,,,,,,,,,,,
+Betelgeuse Betelgeuse,,,,,,,,,,,,,
+"Oct 19, 2026 - Oct 25, 2026",,,,,,,,,,,,,
+First Name,Last Name,Payroll ID,Role,Location,Date,Clock In,Clock Out,Unpaid Breaks,Total Paid Hours,Wage Rate,Wage Type,Cash Tips,Credit Tips
+Ana,Ruiz,1001,Bartender,Betelgeuse Betelgeuse - Montrose,10/19/2026,4:00 PM,12:00 AM,0.00,8.00,$10.00,Hourly,$20.00,$180.00
+Ana,Ruiz,1001,Bartender,Betelgeuse Betelgeuse - Montrose,10/20/2026,4:00 PM,12:00 AM,0.00,8.00,$10.00,Hourly,$15.00,$160.00
+Ana,Ruiz,1001,Bartender,Betelgeuse Betelgeuse - Montrose,10/21/2026,4:00 PM,12:00 AM,0.00,8.00,$10.00,Hourly,$10.00,$150.00
+Ana,Ruiz,1001,Bartender,Betelgeuse Betelgeuse - Montrose,10/22/2026,4:00 PM,12:00 AM,0.00,8.00,$10.00,Hourly,$25.00,$210.00
+Ana,Ruiz,1001,Bartender,Betelgeuse Betelgeuse - Montrose,10/23/2026,6:00 PM,2:30 AM,0.00,8.50,$10.00,Hourly,$40.00,$290.00
+Ana,Ruiz,1001,Bartender,Betelgeuse Betelgeuse - Montrose,10/24/2026,5:00 PM,1:30 AM,0.50,8.00,$10.00,Hourly,$40.00,$260.00
+Sam,Lee,1002,Line Cook,Betelgeuse Betelgeuse - Montrose,10/25/2026,11:00 AM,7:00 PM,0.50,7.50,$15.00,Hourly,$0.00,$0.00
+Dev,Patel,2001,Barback,Betelgeuse Betelgeuse - Washington,10/22/2026,5:00 PM,11:00 PM,0.00,6.00,$12.00,Hourly,$0.00,$45.00
+Dev,Patel,2001,Barback,Betelgeuse Betelgeuse - Washington,10/25/2026,12:30 AM,3:00 AM,0.00,2.50,$12.00,Hourly,$0.00,$40.00
+Riley,Chen,2002,Kitchen Manager,Betelgeuse Betelgeuse - Washington,10/20/2026,10:00 AM,6:00 PM,0.00,8.00,"$60,000.00",Salary,$0.00,$0.00
+Totals,,,,,,,,1.00,72.50,,,$150.00,"$1,335.00"
