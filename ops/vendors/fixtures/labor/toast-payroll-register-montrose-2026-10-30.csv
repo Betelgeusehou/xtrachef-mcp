@@ -1,0 +1,10 @@
+Betelgeuse/Betelmania LLC,,,,,,,,,,,,,,,,,,,,
+Payroll Register,,,,,,,,,,,,,,,,,,,,
+Location: Betelgeuse Betelgeuse - Montrose,,,,,,,,,,,,,,,,,,,,
+Check Date: 10/30/2026,,,,,,,,,,,,,,,,,,,,
+Pay Period: 10/12/2026 - 10/25/2026,,,,,,,,,,,,,,,,,,,,
+Employee,Employee ID,Pay Type,Regular Hours,Overtime Hours,Regular Pay,Overtime Pay,Salary,Cash Tips,Credit Card Tips,Gross Pay,Federal Income Tax,Social Security - EE,Medicare - EE,Social Security - ER,Medicare - ER,FUTA,TX SUI,Health Insurance - ER,Health Insurance - EE,Net Pay
+"Ruiz, Ana",1001,Hourly,80.00,8.50,$800.00,$127.50,$0.00,$150.00,"$1,250.00","$2,327.50",$180.00,$144.31,$33.75,$144.31,$33.75,$6.00,$62.85,$0.00,$0.00,"$1,819.44"
+"Lee, Sam",1002,Hourly,30.00,0.00,$450.00,$0.00,$0.00,$0.00,$0.00,$450.00,$20.00,$27.90,$6.53,$27.90,$6.53,$2.70,$12.15,$0.00,$0.00,$395.57
+"Chen, Riley",1003,Salary,,,$0.00,$0.00,"$2,307.69",$0.00,$0.00,"$2,307.69",$250.00,$143.08,$33.46,$143.08,$33.46,$0.00,$0.00,$300.00,$75.00,"$1,806.15"
+Totals,,,110.00,8.50,"$1,250.00",$127.50,"$2,307.69",$150.00,"$1,250.00","$5,085.19",$450.00,$315.29,$73.74,$315.29,$73.74,$8.70,$75.00,$300.00,$75.00,"$4,021.16"
