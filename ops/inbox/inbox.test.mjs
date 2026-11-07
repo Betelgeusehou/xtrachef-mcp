@@ -295,3 +295,178 @@ test('sweepInbox also sweeps Drive when OPS_DRIVE_FOLDER_ID is set', async () =>
     assert.deepEqual(items.map(i => [i.mode, i.vendor, i.ok]), [['drive', 'any', true]]);
   } finally { delete process.env.OPS_DRIVE_FOLDER_ID; }
 });
+
+// ---------------------------------------------------------------------------
+// Review fixes: Office files are not archives, zip-bomb + download caps, cursor.
+const { isZip, MAX_ENTRY_BYTES } = await import('./zip.mjs');
+const drive = await import('./drive.mjs');
+const zlibT = (await import('node:zlib')).default;
+const XLSX_PATH = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'vendors', 'fixtures', 'labor', 'toast-payroll-employee-detail-washington-2026-10-30.xlsx');
+const XLSX = fs.readFileSync(XLSX_PATH);
+const XLSX_NAME = path.basename(XLSX_PATH);
+const xlsxAdapter = (seen = []) => ({
+  id: 'toast-payroll', modes: ['inbox', 'drive'],
+  matchFile: m => /\.xlsx$/i.test(m.filename),
+  parseFile: (buf, meta) => { seen.push({ buf, meta }); return { payroll_lines: [{ run_id: 'r1', employee: 'x' }] }; },
+});
+
+// Build a one-entry zip; `declared` overrides the uncompressed size written to the headers.
+function makeZip(name, content, { method = 8, declared } = {}) {
+  const data = method === 8 ? zlibT.deflateRawSync(content) : content;
+  const size = declared ?? content.length;
+  const nameBuf = Buffer.from(name);
+  const loc = Buffer.alloc(30); loc.writeUInt32LE(0x04034b50, 0); loc.writeUInt16LE(method, 8);
+  loc.writeUInt32LE(data.length, 18); loc.writeUInt32LE(size, 22); loc.writeUInt16LE(nameBuf.length, 26);
+  const cen = Buffer.alloc(46); cen.writeUInt32LE(0x02014b50, 0); cen.writeUInt16LE(method, 10);
+  cen.writeUInt32LE(data.length, 20); cen.writeUInt32LE(size, 24); cen.writeUInt16LE(nameBuf.length, 28); cen.writeUInt32LE(0, 42);
+  const cenOff = 30 + nameBuf.length + data.length;
+  const eocd = Buffer.alloc(22); eocd.writeUInt32LE(0x06054b50, 0); eocd.writeUInt16LE(1, 8); eocd.writeUInt16LE(1, 10);
+  eocd.writeUInt32LE(46 + nameBuf.length, 12); eocd.writeUInt32LE(cenOff, 16);
+  return Buffer.concat([loc, nameBuf, data, cen, nameBuf, eocd]);
+}
+
+test('isZip: only .zip names or zip MIME types; Office containers never', () => {
+  assert.equal(XLSX.readUInt32LE(0), 0x04034b50, 'fixture really is a PK container');
+  assert.equal(isZip(XLSX, 'payroll.xlsx', 'application/octet-stream'), false);
+  assert.equal(isZip(XLSX, 'payroll.xlsx', 'application/zip'), false);
+  for (const n of ['a.xlsm', 'a.xlsb', 'a.docx', 'a.pptx', 'a.ods']) assert.equal(isZip(XLSX, n, 'application/x-zip-compressed'), false, n);
+  assert.equal(isZip(XLSX, 'report', 'application/octet-stream'), false, 'no header sniffing');
+  assert.equal(isZip(XLSX, 'report', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'), false);
+  assert.equal(isZip(ZIP, 'weekly.ZIP', ''), true);
+  assert.equal(isZip(ZIP, 'weekly', 'application/zip'), true);
+  assert.equal(isZip(ZIP, 'weekly', 'application/x-zip-compressed'), true);
+});
+
+test('xlsx attachments reach the adapter whole (inbox), even with a generic MIME type', async () => {
+  mockFetch({ 'https://s3.example/X': XLSX });
+  const msg = { ...fixture().messages[0], payload: undefined, attachmentList: [{ attachmentId: 'X', filename: XLSX_NAME, mimeType: 'application/octet-stream' }] };
+  const seen = [];
+  const { exec } = inboxExec({ messages: [msg] });
+  const items = await sweepInbox({ adapters: [xlsxAdapter(seen)], exec, since: 0, drive: false });
+  assert.deepEqual(items.map(i => [i.file, i.vendor, i.ok, i.records]), [[XLSX_NAME, 'toast-payroll', true, 1]]);
+  assert.deepEqual(seen[0].buf, XLSX);
+  assert.equal(seen[0].meta.archive, undefined);
+});
+
+test('xlsx files reach the adapter whole (Drive)', async () => {
+  mockFetch({ 'https://s3.example/dx': XLSX });
+  const seen = [];
+  const { exec } = fakeExec({
+    GOOGLEDRIVE_FIND_FILE: { files: [{ id: 'dx', name: XLSX_NAME, mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', md5Checksum: 'x1' }] },
+    GOOGLEDRIVE_DOWNLOAD_FILE: { downloaded_file_content: { s3url: 'https://s3.example/dx' } },
+  });
+  const items = await sweepDrive({ folderId: 'F', adapters: [xlsxAdapter(seen)], exec });
+  assert.deepEqual(items.map(i => [i.file, i.vendor, i.ok]), [[XLSX_NAME, 'toast-payroll', true]]);
+  assert.deepEqual(seen[0].buf, XLSX);
+});
+
+test('unzip rejects entries declaring more than 50MB before inflating', () => {
+  const z = makeZip('huge.csv', Buffer.from('a,b\n'), { declared: MAX_ENTRY_BYTES + 1 });
+  assert.throws(() => unzip(z), /huge\.csv is too large \(52428801 bytes uncompressed; limit 52428800\)/);
+});
+
+test('unzip caps inflate output at the declared size (lying header)', () => {
+  const z = makeZip('bomb.csv', Buffer.alloc(4 * 1024 * 1024), { declared: 100 });
+  assert.throws(() => unzip(z), /bomb\.csv inflates past its declared size \(100 bytes\)/);
+});
+
+test('unzip caps total archive output', () => {
+  assert.throws(() => unzip(ZIP, { maxTotalBytes: 100 }), /expands past the 100-byte limit/);
+  assert.equal(unzip(ZIP).length, 2);
+});
+
+function sizedResponse(body, { length } = {}) {
+  const headers = length === undefined ? {} : { 'content-length': String(length) };
+  return new Response(body, { status: 200, headers });
+}
+
+test('getAttachment rejects oversized downloads by content-length and by streamed bytes; env override', async () => {
+  const { exec } = fakeExec({ GMAIL_GET_ATTACHMENT: { file: { s3url: 'https://s3.example/big' } } });
+  globalThis.fetch = async () => sizedResponse('x', { length: 26 * 1024 * 1024 });
+  await assert.rejects(gmail.getAttachment({ id: 'm' }, { attachmentId: 'A', filename: 'big.csv' }, { exec }), /Attachment big\.csv is too large \(27262976 bytes; limit 26214400 bytes/);
+  process.env.OPS_MAX_FILE_BYTES = '1000';
+  try {
+    globalThis.fetch = async () => new Response(new ReadableStream({ pull(c) { c.enqueue(new Uint8Array(400)); } }), { status: 200 });
+    await assert.rejects(gmail.getAttachment({ id: 'm' }, { attachmentId: 'A', filename: 'stream.csv' }, { exec }), /stream\.csv is too large.*limit 1000 bytes/);
+    await assert.rejects(gmail.getAttachment({ id: 'm' }, { filename: 'inline.csv', data: Buffer.alloc(2000).toString('base64') }, { exec }), /inline\.csv is too large/);
+    globalThis.fetch = async () => sizedResponse(CSV, { length: CSV.length });
+    assert.deepEqual(await gmail.getAttachment({ id: 'm' }, { attachmentId: 'A', filename: 'ok.csv' }, { exec }), CSV);
+  } finally { delete process.env.OPS_MAX_FILE_BYTES; }
+});
+
+test('Drive downloadFile rejects oversized files (listed size, content-length, stream)', async () => {
+  const { exec, calls } = fakeExec({ GOOGLEDRIVE_DOWNLOAD_FILE: { downloaded_file_content: { s3url: 'https://s3.example/big' } } });
+  await assert.rejects(drive.downloadFile({ id: 'b', name: 'big.csv', mimeType: 'text/csv', size: String(30 * 1024 * 1024) }, { exec }), /Drive file big\.csv is too large/);
+  assert.equal(calls.length, 0, 'listed size rejects before asking Composio');
+  globalThis.fetch = async () => sizedResponse('x', { length: 30 * 1024 * 1024 });
+  await assert.rejects(drive.downloadFile({ id: 'b', name: 'big.csv', mimeType: 'text/csv' }, { exec }), /Drive file big\.csv is too large/);
+  process.env.OPS_MAX_FILE_BYTES = '10';
+  try {
+    globalThis.fetch = async () => new Response(Buffer.alloc(50), { status: 200 });
+    await assert.rejects(drive.downloadFile({ id: 'b', name: 's.csv', mimeType: 'text/csv' }, { exec }), /s\.csv is too large.*limit 10 bytes/);
+  } finally { delete process.env.OPS_MAX_FILE_BYTES; }
+});
+
+test('oversized attachment or zip bomb becomes a per-file failure, not a crash', async () => {
+  const bomb = makeZip('bomb.csv', Buffer.alloc(1024 * 1024), { declared: 10 });
+  globalThis.fetch = async url => String(url).endsWith('/BIG') ? sizedResponse('x', { length: 100 * 1024 * 1024 })
+    : String(url).endsWith('/BOMB') ? sizedResponse(bomb) : sizedResponse(CSV);
+  const msg = { ...fixture().messages[0], payload: undefined, attachmentList: [
+    { attachmentId: 'BIG', filename: 'huge.csv', mimeType: 'text/csv' },
+    { attachmentId: 'BOMB', filename: 'bomb.zip', mimeType: 'application/zip' },
+    { attachmentId: 'OK', filename: 'doordash_orders.csv', mimeType: 'text/csv' },
+  ] };
+  const { exec } = inboxExec({ messages: [msg] });
+  const items = await sweepInbox({ adapters: [ddAdapter()], exec, since: 0, drive: false });
+  assert.deepEqual(items.map(i => [i.file, i.vendor, i.ok]), [['huge.csv', null, false], ['bomb.zip', null, false], ['doordash_orders.csv', 'doordash', true]]);
+  assert.match(items[0].error, /^download failed: Attachment huge\.csv is too large/);
+  assert.match(items[1].error, /^download failed: Zip entry bomb\.csv inflates past/);
+});
+
+const readCursor = () => JSON.parse(fs.readFileSync(path.join(tmp, 'inbox-state.json'), 'utf8')).cursor;
+
+test('cursor: all ok -> advances to startedAt', async () => {
+  mockFetch({ 'https://s3.example/ANGjdJ8sAAA': CSV });
+  const before = Date.now();
+  const { exec } = inboxExec({ messages: [fixture().messages[0]] });
+  await sweepInbox({ adapters: [ddAdapter()], exec, since: 0, drive: false });
+  assert.ok(Date.parse(readCursor()) >= before - 1000);
+});
+
+test('cursor: held 1 minute before the oldest message with an unclaimed/failed file', async () => {
+  mockFetch({ 'https://s3.example/A': CSV });
+  const base = { ...fixture().messages[0], payload: undefined };
+  const ok = { ...base, messageId: 'okmsg', messageTimestamp: '2026-11-05T10:00:00Z',
+    attachmentList: [{ attachmentId: 'A', filename: 'doordash_orders.csv', mimeType: 'text/csv' }] };
+  const failed = { ...base, messageId: 'failmsg', messageTimestamp: '2026-11-03T14:05:00Z',
+    attachmentList: [{ attachmentId: 'MISSING', filename: 'doordash_orders.csv', mimeType: 'text/csv' }] }; // 404 -> download failed
+  const unclaimed = { ...base, messageId: 'unmsg', messageTimestamp: '2026-11-04T08:00:00Z',
+    attachmentList: [{ attachmentId: 'A', filename: 'mystery.pdf', mimeType: 'application/pdf' }] };
+  const { exec, calls } = inboxExec({ messages: [ok, failed, unclaimed] });
+  const items = await sweepInbox({ adapters: [ddAdapter()], exec, since: 0, drive: false });
+  assert.deepEqual(items.map(i => [i.messageId, i.ok]), [['okmsg', true], ['failmsg', false], ['unmsg', false]]);
+  assert.equal(readCursor(), '2026-11-03T14:04:00.000Z');
+  // next sweep searches from (cursor - overlap), so the failed message is fetched again
+  await sweepInbox({ adapters: [ddAdapter()], exec, drive: false });
+  const q = calls.filter(c => c.tool_slug === 'GMAIL_FETCH_EMAILS').at(-1).arguments.query;
+  assert.equal(Number(q.match(/after:(\d+)/)[1]), (Date.parse('2026-11-03T14:04:00Z') - 3600000) / 1000);
+});
+
+test('cursor: not advanced when the max message limit was hit', async () => {
+  mockFetch({ 'https://s3.example/ANGjdJ8sAAA': CSV });
+  fs.writeFileSync(path.join(tmp, 'inbox-state.json'), JSON.stringify({ cursor: '2026-10-01T00:00:00.000Z' }));
+  const f = fixture();
+  const { exec } = inboxExec({ messages: [f.messages[0], f.messages[1]] });
+  await sweepInbox({ adapters: [ddAdapter()], exec, max: 1, drive: false });
+  assert.equal(readCursor(), '2026-10-01T00:00:00.000Z');
+});
+
+test('unclaimed xlsx stays visible as a no-adapter-matched item', async () => {
+  mockFetch({ 'https://s3.example/X': XLSX });
+  const msg = { ...fixture().messages[0], payload: undefined, attachmentList: [{ attachmentId: 'X', filename: 'unknown.xlsx', mimeType: 'application/octet-stream' }] };
+  const { exec } = inboxExec({ messages: [msg] });
+  const items = await sweepInbox({ adapters: [ddAdapter()], exec, since: 0, drive: false });
+  assert.equal(items.length, 1);
+  assert.deepEqual({ vendor: items[0].vendor, ok: items[0].ok, error: items[0].error, file: items[0].file, messageId: items[0].messageId },
+    { vendor: null, ok: false, error: 'no adapter matched', file: 'unknown.xlsx', messageId: '18f0a1b2c3d4e5f6' });
+});

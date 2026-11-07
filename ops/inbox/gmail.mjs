@@ -4,6 +4,7 @@
 // `exec` has the same signature as src/sync.js composioExecute(tools) -> data[]
 // (one `response.data` per tool call). It defaults to composioExecute; tests inject a fake.
 import { addFiles } from './ledger.mjs';
+import { readCapped, checkSize } from './limits.mjs';
 
 // Composio GMAIL toolkit slugs + argument names. Verified 2026-11-07 against Composio's
 // live tool schemas (COMPOSIO_GET_TOOL_SCHEMAS, input + output schema); toolkit docs:
@@ -158,24 +159,29 @@ export async function fetchMessage(messageId, { exec } = {}) {
   return parseMessage(await call(exec, GMAIL.FETCH_MESSAGE, { message_id: messageId, format: 'full' }));
 }
 
-async function download(url) {
+async function download(url, name) {
   const res = await fetch(url, { signal: AbortSignal.timeout(120000) });
   if (!res.ok) throw Error(`Attachment download returned HTTP ${res.status}`);
-  return Buffer.from(await res.arrayBuffer());
+  return readCapped(res, `Attachment ${name}`);
+}
+// Inline base64: check the decoded-size estimate before decoding.
+function inlineCapped(s, name) {
+  checkSize(`Attachment ${name}`, Math.floor(String(s).length * 3 / 4));
+  return b64(s);
 }
 
 // Composio returns attachments as a hosted file (s3url) or, in some versions, inline base64.
 export async function getAttachment(message, attachment, { exec } = {}) {
-  if (attachment.data) return b64(attachment.data);
+  if (attachment.data) return inlineCapped(attachment.data, attachment.filename);
   if (!attachment.attachmentId) throw Error(`Attachment ${attachment.filename} has no attachmentId`);
   const data = await call(exec, GMAIL.GET_ATTACHMENT, {
     message_id: message.id ?? message, attachment_id: attachment.attachmentId, file_name: attachment.filename || 'attachment',
   });
   const f = data?.file ?? data?.downloaded_file_content ?? data;
   const url = f?.s3url || f?.url || f?.download_url || data?.s3url || data?.url;
-  if (url) return download(url);
+  if (url) return download(url, attachment.filename);
   const inline = f?.data ?? f?.content ?? data?.data ?? data?.content;
-  if (typeof inline === 'string' && inline) return b64(inline);
+  if (typeof inline === 'string' && inline) return inlineCapped(inline, attachment.filename);
   throw Error(`Gmail returned no content for attachment ${attachment.filename}`);
 }
 

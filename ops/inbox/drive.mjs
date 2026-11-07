@@ -3,6 +3,7 @@
 // and src/pmix.js (GOOGLEDRIVE_FIND_FILE, GOOGLEDRIVE_DOWNLOAD_FILE -> downloaded_file_content.s3url).
 import { readLedger, hasFile, addFiles, sha256 } from './ledger.mjs';
 import { loadAdapters, expand, routeFile, persistItems } from './route.mjs';
+import { readCapped, checkSize } from './limits.mjs';
 
 export const DRIVE = { FIND_FILE: 'GOOGLEDRIVE_FIND_FILE', DOWNLOAD_FILE: 'GOOGLEDRIVE_DOWNLOAD_FILE' };
 
@@ -41,12 +42,13 @@ export async function listFolder(folderId, { exec, max = 200 } = {}) {
 
 export async function downloadFile(file, { exec } = {}) {
   const exp = EXPORT[file.mimeType];
+  if (!exp && file.size !== undefined && file.size !== null && file.size !== '') checkSize(`Drive file ${file.name}`, Number(file.size));
   const data = await call(exec, DRIVE.DOWNLOAD_FILE, { fileId: file.id, ...(exp ? { mime_type: exp[0] } : {}) });
   const url = data?.downloaded_file_content?.s3url || data?.downloaded_file_content?.url;
   if (!url) throw Error(`Drive download of ${file.name} returned no file link`);
   const res = await fetch(url, { signal: AbortSignal.timeout(120000) });
   if (!res.ok) throw Error(`Downloading ${file.name} from Drive returned HTTP ${res.status}`);
-  return Buffer.from(await res.arrayBuffer());
+  return readCapped(res, `Drive file ${file.name}`);
 }
 
 // Version key: a re-uploaded/edited file gets a new key and is re-ingested.

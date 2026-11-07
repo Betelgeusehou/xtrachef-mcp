@@ -17,6 +17,7 @@ export { sweepDrive } from './drive.mjs';
 
 const LOOKBACK_DAYS = 14;
 const OVERLAP_MS = 60 * 60 * 1000; // re-scan the last hour; ledger dedupes
+const CURSOR_SLACK_MS = 60 * 1000; // cursor lands 1 minute before the oldest pending message
 
 function bodyCandidate(m) {
   if (m.bodyHtml) return { filename: 'body.html', ledgerName: 'body.html', buffer: Buffer.from(m.bodyHtml, 'utf8'), mimeType: 'text/html' };
@@ -32,6 +33,7 @@ export async function sweepInbox({ adapters, exec, since, label = gmailLabel(), 
   const messages = await findMessages({ label, after, max }, { exec });
   const done = readLedger().messages;
   const items = [];
+  let earliestPending = Infinity; // receivedAt (ms) of the oldest message left with a failed/unclaimed file
 
   for (const m of messages) {
     if (done[m.id]) continue;
@@ -60,11 +62,25 @@ export async function sweepInbox({ adapters, exec, since, label = gmailLabel(), 
       if (!mark.labeled) for (const i of routed) i.labelError = mark.error;
     } else {
       addFiles(m.id, okFiles); // keep unclaimed/failed files retryable
+      if (routed.some(i => !i.ok)) {
+        const t = Date.parse(m.receivedAt);
+        // No usable timestamp: hold the cursor at `after` so the message stays in the window.
+        earliestPending = Math.min(earliestPending, Number.isFinite(t) ? t : after + CURSOR_SLACK_MS);
+      }
     }
     items.push(...routed);
   }
 
-  writeState({ ...readState(), cursor: startedAt, lastSweepAt: startedAt, lastCount: items.length });
+  // Advance the cursor only past messages that fully succeeded. If the page cap was hit,
+  // older unseen messages may remain, so don't advance at all. The ledger dedupes successes.
+  const prev = readState();
+  const hitMax = messages.length >= max;
+  let cursor = prev.cursor ?? null;
+  if (!hitMax) {
+    const next = Math.min(Date.parse(startedAt), earliestPending - CURSOR_SLACK_MS);
+    cursor = new Date(next).toISOString();
+  }
+  writeState({ ...prev, cursor, lastSweepAt: startedAt, lastCount: items.length, ...(hitMax ? { lastHitMax: startedAt } : {}) });
 
   if (drive && process.env.OPS_DRIVE_FOLDER_ID) {
     try {
