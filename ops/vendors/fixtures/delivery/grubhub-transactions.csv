@@ -1,0 +1,7 @@
+Restaurant,Restaurant ID,Order Number,Transaction Type,Fulfillment Type,Order Date,Order Time,Subtotal,Delivery Fee,Sales Tax,Withheld Tax,Tip,Total,Commission,Delivery Commission,Processing Fee,Promotion,Adjustment,Restaurant Total,Deposit ID,Deposit Date
+Betelgeuse (Montrose),gh-1101,1001-2345,Prepaid Order,Grubhub Delivery,11/02/2026,8:05 PM,$35.00,$0.00,$2.89,($2.89),$0.00,$37.89,($5.25),($3.50),($1.37),$0.00,$0.00,$24.88,D-55501,11/09/2026
+Betelgeuse - Washington,gh-1102,1001-2399,Prepaid Order,Pickup,11/04/2026,1:15 AM,$28.00,$0.00,$2.31,($2.31),$5.00,$35.31,($4.20),$0.00,($1.30),$0.00,$0.00,$27.50,D-55502,11/09/2026
+Betelgeuse (Montrose),gh-1101,1001-2345,Adjustment,Grubhub Delivery,11/03/2026,10:00 AM,$0.00,$0.00,$0.00,$0.00,$0.00,$0.00,$0.00,$0.00,$0.00,$0.00,$2.00,$2.00,D-55501,11/09/2026
+Betelgeuse - Washington,gh-1102,1001-2399,Error Charge,Pickup,11/04/2026,2:00 PM,$0.00,$0.00,$0.00,$0.00,$0.00,$0.00,$0.00,$0.00,$0.00,$0.00,($6.00),($6.00),D-55502,11/09/2026
+Betelgeuse (Montrose),gh-1101,1001-2477,Prepaid Order,Grubhub Delivery,11/05/2026,7:30 PM,$40.00,$0.00,$3.30,($3.30),$0.00,$38.30,($6.00),($4.00),($1.52),($5.00),$0.00,$23.48,D-55501,11/09/2026
+Total,,,,,,,$103.00,$0.00,$8.50,($8.50),$5.00,$111.50,($15.45),($7.50),($4.19),($5.00),($4.00),$71.86,,

@@ -1,0 +1,23 @@
+{
+  "_note": "Synthetic responses in the ASSUMED shape of ENDPOINTS in ubereats.mjs. Replace with captures from npm run ops:record ubereats.",
+  "stores": { "data": { "stores": [ { "uuid": "ue-store-m", "name": "Betelgeuse Pizza - Montrose" }, { "uuid": "ue-store-w", "name": "Betelgeuse Pizza - Washington" } ] } },
+  "paymentDetails": {
+    "ue-store-m": [
+      { "data": { "orders": [
+        { "workflowId": "wf-11111111-aaaa", "orderId": "3F2A1", "orderStatus": "Completed", "diningMode": "Delivery by Uber", "orderDate": "2026-11-02", "orderAcceptTime": "21:12", "salesExclTax": { "amountE5": 3000000, "currencyCode": "USD" }, "taxOnSales": { "amountE5": 248000, "currencyCode": "USD" }, "promotionsOnItems": { "amountE5": -300000, "currencyCode": "USD" }, "taxOnPromotionsOnItems": { "amountE5": -25000, "currencyCode": "USD" }, "marketplaceFee": { "amountE5": -900000, "currencyCode": "USD" }, "marketplaceFacilitatorTax": { "amountE5": -223000, "currencyCode": "USD" }, "tips": { "amountE5": 0, "currencyCode": "USD" }, "totalPayout": { "amountE5": 1800000, "currencyCode": "USD" }, "payoutDate": "2026-11-09", "payoutReferenceId": "PR-M-77" }
+      ], "nextCursor": null } }
+    ],
+    "ue-store-w": [
+      { "data": { "orders": [
+        { "workflowId": "wf-22222222-bbbb", "orderId": "7C9D4", "orderStatus": "Completed", "orderDate": "2026-11-03", "orderAcceptTime": "00:45", "salesExclTax": 22.0, "taxOnSales": 1.82, "marketplaceFee": -6.6, "marketplaceFacilitatorTax": -1.82, "tips": 0, "totalPayout": 15.4, "payoutDate": "2026-11-09", "payoutReferenceId": "PR-W-88" }
+      ], "nextCursor": "p2" } },
+      { "data": { "orders": [
+        { "workflowId": "wf-33333333-cccc", "orderId": "8E1F0", "orderStatus": "Completed", "orderDate": "2026-11-03", "orderAcceptTime": "18:30", "salesExclTax": 18.0, "taxOnSales": 1.49, "marketplaceFee": -5.4, "marketplaceFacilitatorTax": -1.49, "refundInclTax": -6.5, "tips": 0, "totalPayout": 6.1, "payoutDate": "2026-11-09", "payoutReferenceId": "PR-W-88" }
+      ], "nextCursor": null } }
+    ]
+  },
+  "payouts": {
+    "ue-store-m": { "data": { "payouts": [] } },
+    "ue-store-w": { "data": { "payouts": [ { "payoutReferenceId": "PR-W-88", "payoutDate": "2026-11-09", "periodStart": "2026-11-02", "periodEnd": "2026-11-08", "salesExclTax": 40.0, "taxOnSales": 3.31, "marketplaceFacilitatorTax": -3.31, "marketplaceFee": -12.0, "refundInclTax": -6.5, "totalPayout": 21.5 } ] } }
+  }
+}
