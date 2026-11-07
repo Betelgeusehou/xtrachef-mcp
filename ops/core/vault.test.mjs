@@ -70,3 +70,34 @@ test('env bootstrap wins over vault and needs no key', () => {
 test('rejects path-traversal vendor ids', () => {
   assert.throws(() => v.saveSession('../x', {}), /Invalid vendor id/);
 });
+
+test('ciphertext is bound to its context (AAD); mismatch fails clearly', () => {
+  const key = Buffer.from(KEY, 'base64');
+  const enc = v.encrypt({ a: 1 }, key, 'session:doordash');
+  assert.deepEqual(v.decrypt(enc, key, 'session:doordash'), { a: 1 });
+  assert.throws(() => v.decrypt(enc, key, 'session:grubhub'), /written for context "session:doordash", expected "session:grubhub"/);
+  assert.throws(() => v.decrypt(enc, key, 'vault'), /expected "vault"/);
+  // Rewriting the envelope's context label does not get past GCM authentication.
+  const parts = enc.split('.');
+  parts[1] = Buffer.from('session:grubhub').toString('base64url');
+  assert.throws(() => v.decrypt(parts.join('.'), key, 'session:grubhub'), /does not match|altered/);
+  // Swapping one vendor's session file onto another vendor is rejected.
+  v.saveSession('doordash', { cookies: [], origins: [] }, { source: 't' });
+  fs.mkdirSync(path.join(dir, 'sessions'), { recursive: true });
+  fs.copyFileSync(path.join(dir, 'sessions', 'doordash.enc'), path.join(dir, 'sessions', 'grubhub.enc'));
+  assert.throws(() => v.loadSession('grubhub'), /context "session:doordash", expected "session:grubhub"/);
+  // A session file can't be dropped in as the vault either.
+  const vaultPath = path.join(dir, 'vault.enc');
+  const saved = fs.readFileSync(vaultPath, 'utf8');
+  fs.copyFileSync(path.join(dir, 'sessions', 'doordash.enc'), vaultPath);
+  assert.throws(() => v.getCreds('grubhub'), /expected "vault"/);
+  fs.writeFileSync(vaultPath, saved);
+  v.clearSession('doordash'); v.clearSession('grubhub');
+});
+
+test('rejects auth tags that are not 16 bytes', () => {
+  const key = Buffer.from(KEY, 'base64');
+  const parts = v.encrypt({ a: 1 }, key).split('.');
+  parts[3] = Buffer.from(parts[3], 'base64').subarray(0, 4).toString('base64');
+  assert.throws(() => v.decrypt(parts.join('.'), key), /invalid auth tag \(4 bytes, expected 16\)/);
+});

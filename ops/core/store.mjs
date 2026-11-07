@@ -106,3 +106,9 @@ export function lastRuns() {
 export function lastSuccess(vendor) {
   return open().prepare('SELECT finished_at FROM runs WHERE vendor = ? AND ok = 1 ORDER BY id DESC LIMIT 1').get(vendor)?.finished_at ?? null;
 }
+// Distinct failure messages recorded for `vendor` since `sinceIso`, newest first. Used for
+// 'inbox:unmatched', where each message names one unclaimed file.
+export function recentFailures(vendor, sinceIso) {
+  return open().prepare('SELECT error, MAX(finished_at) at FROM runs WHERE vendor = ? AND ok = 0 AND finished_at >= ? GROUP BY error ORDER BY at DESC')
+    .all(vendor, sinceIso).map(r => ({ error: r.error, at: r.at }));
+}
