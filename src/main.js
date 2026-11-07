@@ -20,6 +20,11 @@ import * as store from "./store.js";
 import * as sync from "./sync.js";
 import * as pmix from "./pmix.js";
 
+// ops connector layer (ops/): loaded lazily so a missing/broken module never stops the server.
+let opsTools = null, opsHttp = null;
+try { opsTools = await import("../ops/tools.mjs"); } catch (e) { console.error("[ops] tools not loaded:", e?.message || e); }
+try { opsHttp = await import("../ops/http.mjs"); } catch (e) { console.error("[ops] http not loaded:", e?.message || e); }
+
 const MODE = process.env.XTRACHEF_MCP_MODE || "stdio";
 
 const json = (obj) => ({ content: [{ type: "text", text: JSON.stringify(obj, null, 2) }] });
@@ -95,6 +100,10 @@ export function buildServer({ local = true } = {}) {
       return { content: [{ type: "text", text: JSON.stringify({ ...pmix.current(), ...(load ? { load } : {}) }) }] };
     });
 
+  if (opsTools) {
+    try { opsTools.registerOpsTools(server, z); } catch (e) { console.error("[ops] tool registration failed:", e?.message || e); }
+  }
+
   return server;
 }
 
@@ -165,6 +174,7 @@ async function runHttp() {
         return handleMcp(req, res);
       }
       if (!authed) return send(res, 404, "Not found");
+      if (opsHttp && (route === "/ops" || route.startsWith("/ops/")) && await opsHttp.handleOps(req, res, route)) return;
       if (route === "/ingest" && req.method === "POST") {
         const name = url.searchParams.get("name") || `upload_${Date.now()}.csv`;
         const text = await readBody(req, DATA_LIMIT);
@@ -200,6 +210,9 @@ async function runHttp() {
     startDashboardRunner();
     sync.startSyncScheduler();
     pmix.startPmixScheduler();
+    import("../ops/core/runner.mjs")
+      .then((m) => m.startOpsRunner?.())
+      .catch((e) => console.error("[ops] runner not started:", e?.code === "ERR_MODULE_NOT_FOUND" ? "ops/core/runner.mjs not deployed yet" : (e?.message || e)));
     console.error(`xtrachef-mcp running (http) on :${port}  data dir: ${store.DATA_DIR}`);
     console.error(`  MCP endpoint: POST /<secret>/mcp   health: GET /health`);
   });

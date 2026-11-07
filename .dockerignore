@@ -1,0 +1,9 @@
+node_modules
+.git
+.claude
+data
+*.enc
+*-endpoints-*.json
+npm-debug.log
+.env
+.env.*

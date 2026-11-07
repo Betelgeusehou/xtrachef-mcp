@@ -1,0 +1,43 @@
+{
+  "manifest_version": 3,
+  "name": "Betelgeuse Ops Session Handoff",
+  "version": "1.0.0",
+  "description": "Pushes Chrome's signed-in vendor portal sessions (DoorDash, Uber Eats, Grubhub, Homebase, Toast) to the Betelgeuse ops server so it can collect reports.",
+  "minimum_chrome_version": "116",
+  "permissions": [
+    "cookies",
+    "alarms",
+    "storage",
+    "notifications"
+  ],
+  "host_permissions": [
+    "https://*.doordash.com/*",
+    "https://merchants.ubereats.com/*",
+    "https://ubereats.com/*",
+    "https://auth.uber.com/*",
+    "https://uber.com/*",
+    "https://*.grubhub.com/*",
+    "https://*.joinhomebase.com/*",
+    "https://payroll.toasttab.com/*",
+    "https://auth.toasttab.com/*",
+    "https://toasttab.com/*"
+  ],
+  "optional_host_permissions": [
+    "https://*/*"
+  ],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "icons": {
+    "48": "icon.png"
+  },
+  "action": {
+    "default_title": "Ops session handoff",
+    "default_popup": "popup.html",
+    "default_icon": {
+      "48": "icon.png"
+    }
+  },
+  "options_page": "options.html"
+}

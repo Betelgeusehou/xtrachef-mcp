@@ -1,0 +1,104 @@
+{
+ "messages": [
+  {
+   "messageId": "18f0a1b2c3d4e5f6",
+   "threadId": "18f0a1b2c3d4e5f6",
+   "sender": "DoorDash <no-reply@doordash.com>",
+   "subject": "Your weekly DoorDash report",
+   "messageTimestamp": "2026-11-03T14:05:00Z",
+   "messageText": "See attached.",
+   "labelIds": [
+    "Label_42",
+    "INBOX"
+   ],
+   "preview": {
+    "subject": "Your weekly DoorDash report",
+    "body": "See attached."
+   },
+   "attachmentList": [
+    {
+     "attachmentId": "ANGjdJ8sAAA",
+     "filename": "doordash_orders.csv",
+     "mimeType": "text/csv",
+     "size": 52
+    }
+   ],
+   "payload": {
+    "mimeType": "multipart/mixed",
+    "headers": [
+     {
+      "name": "From",
+      "value": "DoorDash <no-reply@doordash.com>"
+     },
+     {
+      "name": "Subject",
+      "value": "Your weekly DoorDash report"
+     }
+    ],
+    "parts": [
+     {
+      "mimeType": "multipart/alternative",
+      "parts": [
+       {
+        "mimeType": "text/plain",
+        "body": {
+         "size": 13,
+         "data": "U2VlIGF0dGFjaGVkLg"
+        }
+       },
+       {
+        "mimeType": "text/html",
+        "body": {
+         "size": 20,
+         "data": "PHA-U2VlIGF0dGFjaGVkLjwvcD4"
+        }
+       }
+      ]
+     },
+     {
+      "mimeType": "text/csv",
+      "filename": "doordash_orders.csv",
+      "body": {
+       "attachmentId": "ANGjdJ8sAAA",
+       "size": 52
+      }
+     }
+    ]
+   }
+  },
+  {
+   "messageId": "18f0a1b2c3d4e5f7",
+   "threadId": "18f0a1b2c3d4e5f7",
+   "sender": "Homebase <reports@joinhomebase.com>",
+   "subject": "Daily labor summary",
+   "messageTimestamp": "1762300000000",
+   "messageText": "",
+   "labelIds": [
+    "Label_42"
+   ],
+   "attachmentList": [],
+   "payload": {
+    "mimeType": "multipart/alternative",
+    "headers": [],
+    "parts": [
+     {
+      "mimeType": "text/plain",
+      "body": {
+       "size": 5,
+       "data": "TGFib3I"
+      }
+     },
+     {
+      "mimeType": "text/html",
+      "body": {
+       "size": 40,
+       "data": "PGh0bWw-PGJvZHk-PHRhYmxlPjx0cj48dGQ-TGFib3I8L3RkPjwvdHI-PC90YWJsZT48L2JvZHk-PC9odG1sPg"
+      }
+     }
+    ]
+   }
+  }
+ ],
+ "nextPageToken": "",
+ "resultSizeEstimate": 2
+}
