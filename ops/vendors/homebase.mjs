@@ -9,12 +9,42 @@
 //   inbox / drive  Timesheets export CSV and Schedule export CSV (column names ASSUMED, aliased).
 import { canonicalStore } from '../core/stores.mjs';
 import {
-  TZ, round2, round4, num, hours, stableId, findHeaderRow, isTotalRow, readTable, normHeader,
+  TZ, round2, round4, num, hours, findHeaderRow, isTotalRow, readTable, normHeader,
   businessDate, businessWindow, isoInZone, combineDateTime, parseDate, parseTime, addDays,
-  computeWeeklyOvertime, inRange, arrayIn, pick, zonedToUtc,
+  computeWeeklyOvertime, inRange, arrayIn, pick, zonedToUtc, workweekStart,
 } from './_labor-common.mjs';
 
 const VENDOR = 'homebase';
+
+// ---------------------------------------------------------------- natural keys
+// shift_id is built from business facts, never from a vendor id, so the same shift collected via the
+// API, a session, or a CSV export upserts onto one row. Vendor ids stay in extra.
+//   labor_shifts:    `${store}|${employeeKey}|${clock_in UTC minute}`
+//   schedule_shifts: `${store}|${employeeKey}|${start UTC minute}|${role}`
+// For labor_shifts employeeKey prefers the Homebase payroll id (present on API timecards and the
+// Timesheets export) and falls back to the normalized full name. schedule_shifts use the name only
+// (the API Shift entity has no documented payroll id). See LABOR.md.
+export const normName = n => String(n ?? '').normalize('NFKC').toLowerCase().replace(/\s+/g, ' ').trim();
+export function employeeKey(name, payrollId) {
+  const id = payrollId === undefined || payrollId === null ? '' : String(payrollId).trim();
+  return id ? `id:${id.toLowerCase()}` : normName(name);
+}
+const minuteUtc = ms => new Date(Math.floor(ms / 60000) * 60000).toISOString().slice(0, 16) + 'Z';
+export const laborShiftId = (store, key, clockInMs) => `${store || 'unknown'}|${key}|${minuteUtc(clockInMs)}`;
+export const scheduleShiftId = (store, key, startMs, role) => `${store || 'unknown'}|${key}|${minuteUtc(startMs)}|${normName(role)}`;
+export const isOpenShift = name => !String(name ?? '').trim() || /^(open|unassigned)( shift)?$/i.test(String(name).trim());
+
+// Results carry a non-enumerable `stats` so ops/core/store.upsertResult only sees record kinds.
+function withStats(res, stats) {
+  Object.defineProperty(res, 'stats', { value: { open_shifts_skipped: 0, ...stats }, enumerable: false, writable: true });
+  return res;
+}
+// Drops unassigned/OPEN schedule shifts (they would inflate scheduled hours) and counts them.
+function dropOpen(schedule, stats) {
+  const kept = schedule.filter(s => !s.extra?.open);
+  stats.open_shifts_skipped += schedule.length - kept.length;
+  return kept;
+}
 
 // ---------------------------------------------------------------- public API (verified)
 
@@ -83,12 +113,14 @@ export function mapApiTimecard(tc, location, tz = TZ) {
   const reg = num(L.regular_hours);
   const cash = num(L.cash_tips) || 0, credit = num(L.credit_tips) || 0;
   const salaried = /salar/i.test(L.wage_type || '');
+  const employee = [tc.first_name, tc.last_name].filter(Boolean).join(' ').trim();
+  const key = employeeKey(employee, tc.payroll_id);
   return {
     vendor: VENDOR,
     store,
-    shift_id: `tc-${tc.id}`,
+    shift_id: clockIn ? laborShiftId(store, key, clockIn) : `${store || 'unknown'}|${key}|tc-${tc.id}`,
     business_date: clockIn ? businessDate(clockIn, tz) : null,
-    employee: [tc.first_name, tc.last_name].filter(Boolean).join(' ').trim(),
+    employee,
     role: tc.role || null,
     clock_in: clockIn ? isoInZone(clockIn, tz) : null,
     clock_out: clockOut ? isoInZone(clockOut, tz) : null,
@@ -98,7 +130,7 @@ export function mapApiTimecard(tc, location, tz = TZ) {
     labor_cost: num(L.costs) === null ? null : round2(num(L.costs)),
     tips_declared: round2(cash + credit),
     extra: {
-      source: 'api',
+      source: 'api', homebase_timecard_id: tc.id ?? null, employee_key: key,
       location_uuid: location?.uuid, location_name: location?.name,
       user_id: tc.user_id, payroll_id: tc.payroll_id || null, homebase_shift_id: tc.shift_id ?? null,
       department: tc.department || null, approved: tc.approved ?? null,
@@ -117,21 +149,26 @@ export function mapApiShift(sh, location, tz = TZ) {
   const start = sh.start_at ? Date.parse(sh.start_at) : null;
   const end = sh.end_at ? Date.parse(sh.end_at) : null;
   const sched = num(L.scheduled_hours) ?? (start && end ? (end - start) / 3600000 - (num(L.scheduled_unpaid_breaks_hours) || 0) : null);
+  const name = [sh.first_name, sh.last_name].filter(Boolean).join(' ').trim();
+  const open = !!sh.open || isOpenShift(name);
+  const employee = open ? 'OPEN' : name;
+  const store = canonicalStore(location?.name) || canonicalStore(location?.address_1);
+  const key = employeeKey(employee, null); // name only, see schedRecord
   return {
     vendor: VENDOR,
-    store: canonicalStore(location?.name) || canonicalStore(location?.address_1),
-    shift_id: `sh-${sh.id}`,
+    store,
+    shift_id: start ? scheduleShiftId(store, key, start, sh.role) : `${store || 'unknown'}|${key}|sh-${sh.id}`,
     business_date: start ? businessDate(start, tz) : null,
-    employee: sh.open ? 'OPEN' : [sh.first_name, sh.last_name].filter(Boolean).join(' ').trim(),
+    employee,
     role: sh.role || null,
     start: start ? isoInZone(start, tz) : null,
     end: end ? isoInZone(end, tz) : null,
     scheduled_hours: sched === null ? null : round4(sched),
     scheduled_cost: num(L.scheduled_costs) === null ? null : round2(num(L.scheduled_costs)),
     extra: {
-      source: 'api', location_uuid: location?.uuid, location_name: location?.name,
+      source: 'api', homebase_shift_id: sh.id ?? null, employee_key: key, location_uuid: location?.uuid, location_name: location?.name,
       user_id: sh.user_id ?? null, timecard_id: sh.timecard_id ?? null, department: sh.department || null,
-      wage_rate: num(sh.wage_rate), wage_type: L.wage_type || null, published: sh.published ?? null, open: !!sh.open,
+      wage_rate: num(sh.wage_rate), wage_type: L.wage_type || null, published: sh.published ?? null, open,
       scheduled_overtime: num(L.scheduled_overtime), scheduled_overtime_costs: num(L.scheduled_overtime_costs),
     },
   };
@@ -155,7 +192,9 @@ export async function apiCollect(creds, range, { fetchImpl = globalThis.fetch, s
     const shs = await getAll(API.shifts(loc.uuid), { ...params, date_filter: 'start_at' }, opts);
     schedule_shifts.push(...shs.map(s => mapApiShift(s, loc, tz)));
   }
-  return { labor_shifts: inRange(labor_shifts, range), schedule_shifts: inRange(schedule_shifts, range) };
+  const stats = { open_shifts_skipped: 0 };
+  const sched = dropOpen(schedule_shifts, stats);
+  return withStats({ labor_shifts: inRange(labor_shifts, range), schedule_shifts: inRange(sched, range) }, stats);
 }
 
 // ---------------------------------------------------------------- session mode (internal JSON)
@@ -206,6 +245,7 @@ function normalizeInternal(x, kind) {
     last_name: pick(x, 'last_name', 'user.last_name', 'employee.last_name'),
     role: pick(x, 'role', 'role_name', 'role.name'), department: pick(x, 'department', 'department_name'),
     user_id: pick(x, 'user_id', 'user.id'), approved: pick(x, 'approved'), shift_id: pick(x, 'shift_id'),
+    payroll_id: pick(x, 'payroll_id', 'user.payroll_id', 'employee.payroll_id'),
   };
   if (kind === 'timecard') {
     return { ...base, clock_in: pick(x, 'clock_in', 'start_at'), clock_out: pick(x, 'clock_out', 'end_at'),
@@ -233,7 +273,9 @@ export async function sessionCollect(ctx, range, tz = TZ) {
     const shs = await pageApiAll(ctx, p => ENDPOINTS.shifts(loc.uuid, from, to, p));
     schedule_shifts.push(...shs.map(s => mapApiShift(normalizeInternal(s, 'shift'), loc, tz)).map(r => ({ ...r, extra: { ...r.extra, source: 'session' } })));
   }
-  return { labor_shifts: inRange(labor_shifts, range), schedule_shifts: inRange(schedule_shifts, range) };
+  const stats = { open_shifts_skipped: 0 };
+  const sched = dropOpen(schedule_shifts, stats);
+  return withStats({ labor_shifts: inRange(labor_shifts, range), schedule_shifts: inRange(sched, range) }, stats);
 }
 
 // ---------------------------------------------------------------- login (email + password + emailed code)
@@ -314,6 +356,7 @@ export const TIMESHEET_ALIASES = {
 export const SCHEDULE_ALIASES = {
   employee: ['Employee', 'Employee Name', 'Name', 'Team Member'],
   first: ['First Name'], last: ['Last Name'],
+  payroll_id: ['Payroll ID', 'Employee ID', 'Payroll Id'],
   role: ['Role', 'Position'],
   department: ['Department'],
   location: ['Location', 'Location Name'],
@@ -377,10 +420,12 @@ export function parseTimesheets(rows, meta = {}, { tz = TZ, weekStart = 1 } = {}
     const cash = num(cell(row, cols, 'cash_tips')), credit = num(cell(row, cols, 'credit_tips')), tipsAll = num(cell(row, cols, 'tips'));
     const store = canonicalStore(cell(row, cols, 'location')) || fallbackStore;
     const clockIn = isoInZone(inMs, tz);
+    const payrollId = nonEmpty(cell(row, cols, 'payroll_id')) ? String(cell(row, cols, 'payroll_id')).trim() : null;
+    const key = employeeKey(employee, payrollId);
     const rec = {
       vendor: VENDOR,
       store,
-      shift_id: `csv-${stableId(store, employee, clockIn)}`,
+      shift_id: laborShiftId(store, key, inMs),
       business_date: businessDate(inMs, tz),
       employee,
       role: cell(row, cols, 'role') || null,
@@ -396,15 +441,34 @@ export function parseTimesheets(rows, meta = {}, { tz = TZ, weekStart = 1 } = {}
         department: cell(row, cols, 'department') || null, wage_type: wageType || (salaried ? 'salary' : null), salaried,
         annual_salary: salaried && wage !== null && wage >= 1000 ? wage : null,
         paid_hours: paid === null ? null : round4(paid), unpaid_break_hours: breakH, cash_tips: cash, credit_tips: credit,
-        ot_computed: false, employee_key: (cell(row, cols, 'payroll_id') || employee).toString().toLowerCase(),
+        ot_computed: false, employee_key: key,
       },
     };
     if (!rec.store) rec.extra.store_unresolved = cell(row, cols, 'location') || null;
     out.push(rec);
   }
-  if (!hasOt) computeWeeklyOvertime(out, { weekStart });
+  if (!hasOt) {
+    computeWeeklyOvertime(out, { weekStart });
+    markPartialWeeks(out, weekStart);
+  }
   for (const r of out) if (r.extra.salaried && r.regular_hours === null) { r.regular_hours = r.extra.paid_hours; r.ot_hours = 0; r.extra.ot_exempt = true; }
   return out;
+}
+
+// OT computed from one file only sees the hours in that file. A workweek the file does not cover end to
+// end (the file starts after the week's first day or ends before its last) may be missing hours from
+// another file, so its regular/OT split can be wrong. Those rows get extra.ot_partial_week = true.
+// Coverage is the file's span of business dates (min..max), which is the best the export tells us.
+function markPartialWeeks(shifts, weekStart) {
+  const dates = shifts.map(s => s.business_date).filter(Boolean).sort();
+  if (!dates.length) return;
+  const first = dates[0], last = dates.at(-1);
+  for (const s of shifts) {
+    if (!s.extra?.ot_computed) continue;
+    const ws = workweekStart(s.business_date, weekStart);
+    const partial = ws < first || addDays(ws, 6) > last;
+    s.extra.ot_partial_week = partial;
+  }
 }
 
 // Grid layout: one row per employee, one column per day ("Mon 11/3"), cells like "5p-1a Bartender".
@@ -442,15 +506,19 @@ function parseScheduleGrid(rows, meta, tz) {
   return out;
 }
 
-function schedRecord({ store, employee, role, s, e, hoursVal, cost, wage, breakH, meta, tz, layout }) {
+function schedRecord({ store, employee, role, s, e, hoursVal, cost, wage, breakH, meta, tz, layout, payrollId = null }) {
   const sched = hoursVal ?? (e !== null ? (e - s) / 3600000 - (breakH || 0) : null);
   const startIso = isoInZone(s, tz);
+  const open = isOpenShift(employee);
+  // Schedule keys use the name only: the API Shift entity is not documented to carry payroll_id, and the
+  // key must match across API, session and CSV. The id (when the export has one) stays in extra.
+  const key = employeeKey(open ? 'OPEN' : employee, null);
   return {
-    vendor: VENDOR, store, shift_id: `csv-${stableId('sched', store, employee, startIso, role)}`,
+    vendor: VENDOR, store, shift_id: scheduleShiftId(store, key, s, role),
     business_date: businessDate(s, tz), employee, role, start: startIso, end: e === null ? null : isoInZone(e, tz),
     scheduled_hours: sched === null ? null : round4(sched),
     scheduled_cost: cost !== null && cost !== undefined ? round2(cost) : (wage !== null && wage !== undefined && sched !== null ? round2(sched * wage) : null),
-    extra: { source: 'file', file: meta.filename || null, layout, wage_rate: wage ?? null, ...(store ? {} : { store_unresolved: true }) },
+    extra: { source: 'file', file: meta.filename || null, layout, wage_rate: wage ?? null, employee_key: key, payroll_id: payrollId, open, ...(store ? {} : { store_unresolved: true }) },
   };
 }
 
@@ -474,6 +542,7 @@ export function parseSchedule(rows, meta = {}, { tz = TZ } = {}) {
       store: canonicalStore(cell(row, cols, 'location')) || fallbackStore, employee, role: cell(row, cols, 'role') || null,
       s, e, hoursVal: hours(cell(row, cols, 'scheduled_hours')), cost: num(cell(row, cols, 'scheduled_cost')),
       wage: num(cell(row, cols, 'wage_rate')), breakH: hours(cell(row, cols, 'break_hours')) || 0, meta, tz, layout: 'rows',
+      payrollId: nonEmpty(cell(row, cols, 'payroll_id')) ? String(cell(row, cols, 'payroll_id')).trim() : null,
     }));
   }
   return out;
@@ -499,10 +568,12 @@ export function parseFile(buffer, meta = {}) {
   const rows = readTable(buffer, meta);
   const kind = fileKind(meta);
   const out = { labor_shifts: [], schedule_shifts: [] };
+  const stats = { open_shifts_skipped: 0 };
   if (kind !== 'schedule') out.labor_shifts = parseTimesheets(rows, meta);
-  if (kind === 'schedule' || (!out.labor_shifts.length && kind === null)) out.schedule_shifts = parseSchedule(rows, meta);
+  if (kind === 'schedule' || (!out.labor_shifts.length && kind === null)) out.schedule_shifts = dropOpen(parseSchedule(rows, meta), stats);
+  stats.ot_partial_week_rows = out.labor_shifts.filter(r => r.extra.ot_partial_week).length;
   // A file without a recognizable header set is not silently dropped: the caller sees zero records.
-  return out;
+  return withStats(out, stats);
 }
 
 // ---------------------------------------------------------------- collect

@@ -89,8 +89,14 @@ export function readTable(buffer, meta = {}) {
 
 // ---------------------------------------------------------------- minimal ZIP + XLSX reader
 
+// Largest uncompressed entry readZip will inflate. An XLSX payroll register is a few hundred KB;
+// anything near this is a zip bomb or not a report.
+export const MAX_ZIP_ENTRY_BYTES = 50 * 1024 * 1024;
+
 // Reads a ZIP via its central directory. Supports stored (0) and deflate (8). Returns Map name -> Buffer.
-export function readZip(buf) {
+// Each entry's declared uncompressed size is checked before inflating, and inflation is capped at that
+// size, so a lying header cannot expand past it either.
+export function readZip(buf, { maxEntryBytes = MAX_ZIP_ENTRY_BYTES } = {}) {
   let eocd = -1;
   for (let i = buf.length - 22; i >= Math.max(0, buf.length - 22 - 0xffff); i--) {
     if (buf.readUInt32LE(i) === 0x06054b50) { eocd = i; break; }
@@ -103,15 +109,25 @@ export function readZip(buf) {
     if (buf.readUInt32LE(p) !== 0x02014b50) throw Error('zip: bad central directory entry');
     const method = buf.readUInt16LE(p + 10);
     const compSize = buf.readUInt32LE(p + 20);
+    const rawSize = buf.readUInt32LE(p + 24);
     const nameLen = buf.readUInt16LE(p + 28), extraLen = buf.readUInt16LE(p + 30), commentLen = buf.readUInt16LE(p + 32);
     const localOff = buf.readUInt32LE(p + 42);
     const name = buf.toString('utf8', p + 46, p + 46 + nameLen);
     p += 46 + nameLen + extraLen + commentLen;
+    if (rawSize > maxEntryBytes) throw Error(`zip: entry ${name} declares ${rawSize} bytes uncompressed (limit ${maxEntryBytes})`);
     if (buf.readUInt32LE(localOff) !== 0x04034b50) throw Error('zip: bad local header');
     const start = localOff + 30 + buf.readUInt16LE(localOff + 26) + buf.readUInt16LE(localOff + 28);
     const data = buf.subarray(start, start + compSize);
-    if (method === 0) files.set(name, Buffer.from(data));
-    else if (method === 8) files.set(name, inflateRawSync(data));
+    if (method === 0) {
+      if (data.length > rawSize) throw Error(`zip: stored entry ${name} larger than declared size`);
+      files.set(name, Buffer.from(data));
+    } else if (method === 8) {
+      // maxOutputLength must be >= 1; an empty entry inflates to nothing.
+      try { files.set(name, rawSize === 0 ? Buffer.alloc(0) : inflateRawSync(data, { maxOutputLength: rawSize })); } catch (e) {
+        if (e.code === 'ERR_BUFFER_TOO_LARGE' || /maxOutputLength|buffer/i.test(e.message)) throw Error(`zip: entry ${name} inflates past its declared size ${rawSize}`);
+        throw e;
+      }
+    }
     else throw Error(`zip: unsupported compression method ${method} for ${name}`);
   }
   return files;

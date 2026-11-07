@@ -68,6 +68,13 @@ export function classifyMoney(header) {
 const cell = (row, i) => (i === undefined ? undefined : row[i]);
 const nonEmpty = v => v !== undefined && v !== null && String(v).trim() !== '';
 
+// Natural keys. Identical on every acquisition path (session JSON, session download, inbox, drive),
+// so the same payroll collected two ways upserts onto one row instead of being stored twice.
+// Toast's own payroll id (session) or a run column (file) is kept in extra.toast_run_id.
+export const runKey = (store, checkDate, periodStart, periodEnd) => `${store || 'unknown'}|${checkDate || ''}|${periodStart || ''}|${periodEnd || ''}`;
+// Same-name employees stay separate when an employee id/number is available.
+export const employeeLabel = (name, id) => (nonEmpty(id) ? `${name} #${String(id).trim()}` : name);
+
 function storeFromContext(rows, headerIndex, meta) {
   for (let i = 0; i < headerIndex; i++) for (const c of rows[i]) { const s = canonicalStore(String(c)); if (s) return s; }
   return canonicalStore(meta?.store) || canonicalStore(meta?.filename) || canonicalStore(meta?.subject) || null;
@@ -127,11 +134,12 @@ export function parsePayrollRows(rows, meta = {}) {
     const payType = String(cell(row, cols.pay_type) || '');
     const salaried = /salar/i.test(payType) || (!!sums.salary_pay && !regH && !otH);
     const runCell = cols.payroll_id !== undefined && cols.payroll_id !== cols.employee_id ? cell(row, cols.payroll_id) : undefined;
-    const run_id = nonEmpty(runCell) ? String(runCell).trim() : null;
+    const toastRunId = nonEmpty(runCell) ? String(runCell).trim() : null;
+    const employeeId = cols.employee_id !== undefined && nonEmpty(cell(row, cols.employee_id)) ? String(cell(row, cols.employee_id)).trim() : null;
     lines.push({
       vendor: VENDOR,
-      run_id: run_id || `${store || 'unknown'}-${check_date || period_end || 'nodate'}`,
-      employee,
+      run_id: runKey(store, check_date, period_start, period_end),
+      employee: employeeLabel(employee, employeeId),
       store,
       gross_wages: gross === null ? null : round2(gross),
       regular_hours: regH === null ? (salaried ? null : totH !== null && otH !== null ? round4(totH - otH) : totH) : round4(regH),
@@ -139,8 +147,8 @@ export function parsePayrollRows(rows, meta = {}) {
       tips: round2(sums.tips || 0),
       employer_taxes: er === null ? null : round2(er),
       extra: {
-        source: 'file', file: meta.filename || null,
-        employee_id: cols.employee_id !== undefined ? cell(row, cols.employee_id) || null : null,
+        source: 'file', file: meta.filename || null, toast_run_id: toastRunId,
+        employee_name: employee, employee_id: employeeId,
         fein: cell(row, cols.fein) || null, pay_type: payType || (salaried ? 'Salary' : null), salaried,
         check_date, period_start, period_end,
         employee_taxes: ee === null ? null : round2(ee),
@@ -164,8 +172,12 @@ export function rollupRuns(lines) {
     if (!r) {
       r = { vendor: VENDOR, store: l.store, run_id: l.run_id, pay_date: l.extra.check_date || null, period_start: l.extra.period_start || null, period_end: l.extra.period_end || null,
         gross_wages: 0, employer_taxes: 0, benefits: 0, total_cost: 0, employee_count: 0,
-        extra: { employee_taxes: 0, tips: 0, salaried_gross: 0, hourly_gross: 0, regular_hours: 0, ot_hours: 0, net_pay: 0, source: l.extra.source, file: l.extra.file || null } };
+        extra: { employee_taxes: 0, tips: 0, wages_ex_tips: 0, salaried_gross: 0, hourly_gross: 0, regular_hours: 0, ot_hours: 0, net_pay: 0, source: l.extra.source, file: l.extra.file || null, toast_run_id: null } };
       runs.set(l.run_id, r);
+    }
+    if (l.extra.toast_run_id) {
+      const ids = new Set(String(r.extra.toast_run_id || '').split(',').filter(Boolean)).add(String(l.extra.toast_run_id));
+      r.extra.toast_run_id = [...ids].join(',');
     }
     if (r.store !== l.store) r.extra.mixed_stores = true;
     r.gross_wages += l.gross_wages || 0;
@@ -182,6 +194,8 @@ export function rollupRuns(lines) {
   for (const r of runs.values()) {
     for (const k of ['gross_wages', 'employer_taxes', 'benefits']) r[k] = round2(r[k]);
     for (const k of ['employee_taxes', 'tips', 'salaried_gross', 'hourly_gross', 'net_pay']) r.extra[k] = round2(r.extra[k]);
+    // Gross wages include tips paid through payroll; wages_ex_tips is the wage cost for labor %.
+    r.extra.wages_ex_tips = round2(r.gross_wages - r.extra.tips);
     for (const k of ['regular_hours', 'ot_hours']) r.extra[k] = round4(r.extra[k]);
     // Employer cost of the run: gross wages + employer taxes + employer-paid benefits.
     r.total_cost = round2(r.gross_wages + r.employer_taxes + r.benefits);
@@ -229,7 +243,7 @@ export const SELECTORS = {
 
 // Internal JSON payroll -> lines (assumed shape; pick() tolerates camelCase/snake_case variants).
 export function mapApiPayroll(run, details, { storeHint } = {}) {
-  const runId = String(pick(run, 'id', 'payrollId', 'uuid'));
+  const toastRunId = String(pick(run, 'id', 'payrollId', 'uuid'));
   const store = canonicalStore(pick(run, 'locationName', 'location.name', 'companyName', 'company.name', 'restaurantName')) || canonicalStore(storeHint);
   const check_date = parseDate(pick(run, 'checkDate', 'payDate'));
   const period_start = parseDate(pick(run, 'periodStart', 'payPeriodStart', 'payPeriod.start'));
@@ -247,17 +261,23 @@ export function mapApiPayroll(run, details, { storeHint } = {}) {
     const gross = num(pick(e, 'grossPay', 'grossWages', 'gross', 'totals.gross'));
     const salaried = /salar/i.test(String(pick(e, 'payType', 'compensationType') || '')) || (sumEarn(/salary/i) > 0 && !hrs(/reg/i));
     const lineStore = canonicalStore(pick(e, 'locationName', 'location.name', 'workLocation')) || store;
+    let name = String(pick(e, 'employeeName', 'name', 'employee.name') || [pick(e, 'firstName'), pick(e, 'lastName')].filter(Boolean).join(' ')).trim();
+    const nm = /^([^,]+),\s*(.+)$/.exec(name);
+    if (nm) name = `${nm[2]} ${nm[1]}`;
+    // Prefer the employee number (what the exports show) over an internal id.
+    const employeeId = pick(e, 'employeeNumber', 'employee.number', 'employeeId', 'employee.id') ?? null;
     return {
-      vendor: VENDOR, run_id: runId, employee: String(pick(e, 'employeeName', 'name', 'employee.name') || [pick(e, 'firstName'), pick(e, 'lastName')].filter(Boolean).join(' ')).trim(),
+      vendor: VENDOR, run_id: runKey(lineStore, check_date, period_start, period_end), employee: employeeLabel(name, employeeId),
       store: lineStore,
       gross_wages: gross === null ? null : round2(gross),
       regular_hours: num(pick(e, 'regularHours', 'hours.regular')) ?? (earnings.length && !salaried ? round4(hrs(/reg/i)) : null),
       ot_hours: num(pick(e, 'overtimeHours', 'hours.overtime')) ?? (earnings.length ? round4(hrs(/overtime|\bot\b/i)) : 0),
       tips: round2(tips || 0),
       employer_taxes: erTax === null ? null : round2(erTax),
-      extra: { source: 'session', check_date, period_start, period_end, salaried, employee_taxes: eeTax === null ? null : round2(eeTax),
+      extra: { source: 'session', toast_run_id: toastRunId, check_date, period_start, period_end, salaried, employee_taxes: eeTax === null ? null : round2(eeTax),
         employer_benefits: round2(num(pick(e, 'employerBenefits', 'employerContributions', 'totals.employerBenefits')) || 0),
-        net_pay: num(pick(e, 'netPay', 'totals.netPay')), employee_id: pick(e, 'employeeId', 'employee.id') ?? null },
+        net_pay: num(pick(e, 'netPay', 'totals.netPay')), employee_name: name, employee_id: employeeId === null ? null : String(employeeId),
+        gross_ex_tips: gross === null ? null : round2(gross - (tips || 0)) },
     };
   });
   return lines;

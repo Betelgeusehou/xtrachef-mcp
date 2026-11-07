@@ -25,6 +25,23 @@
   report's title rows, then the filename/subject. A row that can't be mapped keeps `store: null` and
   `extra.store_unresolved` instead of being guessed. In API and session mode, locations that don't map
   (for example a commissary) are skipped and logged.
+- **Natural keys are the same on every path.** The store upserts on these keys, so the same shift or
+  payroll collected via API/session and again from an inbox/drive file must produce the same key or it
+  is stored twice. Vendor ids never go into a key; they are kept in `extra`.
+
+  | Kind | Key | Vendor id kept in |
+  |---|---|---|
+  | `labor_shifts.shift_id` | `<store>\|<employeeKey>\|<clock_in UTC minute>` e.g. `Montrose\|id:1001\|2026-10-23T23:00Z` | `extra.homebase_timecard_id` |
+  | `schedule_shifts.shift_id` | `<store>\|<name key>\|<start UTC minute>\|<role lowercase>` | `extra.homebase_shift_id` |
+  | `payroll_runs.run_id`, `payroll_lines.run_id` | `<store>\|<check date>\|<period start>\|<period end>` | `extra.toast_run_id` |
+  | `payroll_lines.employee` | `<Name> #<employee id>` when an id/number exists, else `<Name>` | `extra.employee_name`, `extra.employee_id` |
+
+  `employeeKey` for labor shifts is `id:<payroll id>` when the source has one (API timecards, the
+  Timesheets export's Payroll ID column) and the lowercased, trimmed full name otherwise. Schedule
+  shifts key on the name only, because the API Shift entity has no documented payroll id. Names are
+  normalized to "First Last" ("Ruiz, Ana" becomes "Ana Ruiz") before keying. If a source drops the
+  payroll id that another source for the same shift had, the two keys differ; keep the Payroll ID
+  column in the Timesheets export.
 - **Totals rows** ("Totals", "Grand Total") are skipped. Grouped exports that put the employee
   name on its own row are handled.
 
@@ -62,6 +79,16 @@ the export column names, so the headers are ASSUMED. They are aliased broadly (`
 row-per-shift and grid ("Mon 10/19" columns, cells like `5p-1a Bartender`) layouts are parsed. Annual
 salary in the wage column (>= 1000) marks the row salaried.
 
+- **Open shifts.** Unassigned / OPEN schedule shifts (API `open: true`, or no employee in the export)
+  are not stored in `schedule_shifts`, so scheduled hours and cost are not inflated by shifts nobody
+  works. The count is in the result's non-enumerable `stats.open_shifts_skipped`.
+- **Partial workweeks.** When a Timesheets export has no OT columns, OT is computed from that file
+  alone. A workweek the file does not cover end to end (the week starts before the file's first
+  business date or ends after its last) may be missing hours from another file, so its regular/OT
+  split can be understated. Those rows get `extra.ot_partial_week = true` (full weeks get `false`;
+  `stats.ot_partial_week_rows` counts them). Export whole Monday-Sunday weeks, or treat flagged rows'
+  OT as provisional until the payroll true-up.
+
 ### Contract extension: `api` mode
 
 The README's `ctx` has no helper for API-key vendors. Homebase adds:
@@ -97,10 +124,20 @@ The README's `ctx` has no helper for API-key vendors. Homebase adds:
   `*_total` variants. Unknown columns are ignored, but every classified value is kept in
   `extra.columns` so a misclassification can be audited.
 - Check date and pay period come from columns when present, otherwise from title rows
-  ("Check Date: 10/30/2026", "Pay Period: 10/12/2026 - 10/25/2026"). `run_id` is a run column if one
-  exists, otherwise `<store>-<check date>`.
+  ("Check Date: 10/30/2026", "Pay Period: 10/12/2026 - 10/25/2026"). `run_id` is always
+  `<store>|<check date>|<period start>|<period end>` (see the key table above); a run column, or the
+  session's Toast payroll id, goes to `extra.toast_run_id`.
 - `payroll_runs.total_cost = gross_wages + employer_taxes + benefits` (employer-paid benefits).
-  `extra` carries `employee_taxes`, `tips`, `salaried_gross`, `hourly_gross`, hours and `net_pay`.
+  `extra` carries `employee_taxes`, `tips`, `wages_ex_tips`, `salaried_gross`, `hourly_gross`, hours and
+  `net_pay`.
+- **Tips vs wages.** `gross_wages` includes tips paid through payroll. Every `payroll_runs` record has
+  `extra.tips` and `extra.wages_ex_tips = gross_wages - tips`; labor-cost consumers read
+  `wages_ex_tips`. Each `payroll_lines` record sets the `tips` column and `extra.gross_ex_tips`.
+- **Same-name employees.** When the export has an employee id/number column (or the session JSON an
+  employee number/id), `payroll_lines.employee` is `Name #id` so two people with the same name are
+  separate lines.
+- **XLSX safety.** The built-in ZIP reader refuses entries declaring more than 50 MB uncompressed and
+  caps inflation at the declared size, so a crafted file cannot exhaust memory.
 - **Session**: the sign-in is bot-checked, so there is **no `login()`**.
   `modes: ['session', 'inbox', 'drive']`. A session is created by the Chrome handoff
   (`handoffDomains: toasttab.com, payroll.toasttab.com, auth.toasttab.com`). `collect` tries the internal

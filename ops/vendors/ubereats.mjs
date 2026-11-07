@@ -277,7 +277,10 @@ export async function isLoggedIn(ctx) {
 function checkPaymentItem(it) {
   const keys = new Set(Object.keys(it).map(normHeader));
   const has = aliases => aliases.some(a => keys.has(normHeader(a)));
-  if (!has([...F.workflow_id, ...F.order_id])) throw new ShapeError('paymentDetails: item missing workflowId/orderId');
+  // order_id is the Workflow ID on every path (the CSV's "Workflow ID" column). An item with only the
+  // short display Order ID would be keyed differently from the same order in a file, so treat it as a
+  // shape change rather than store it under a second key.
+  if (!has(F.workflow_id)) throw new ShapeError('paymentDetails: item missing workflowId');
   if (!has(F.total_payout)) throw new ShapeError('paymentDetails: item missing totalPayout');
 }
 
