@@ -15,7 +15,7 @@
   "license": "MIT",
   "repository": { "type": "git", "url": "https://github.com/Betelgeusehou/xtrachef-mcp.git" },
   "type": "module",
-  "engines": { "node": ">=22.5" },
+  "engines": { "node": ">=22.13" },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0",
     "playwright": "1.64.0",

@@ -1,10 +1,11 @@
 // Ops health: per-vendor freshness, session age, last-run outcome, missing creds. No secrets.
-import { lastRuns, lastSuccess } from './store.mjs';
+import { lastRuns, lastSuccess, recentFailures } from './store.mjs';
 import { adapters as loadAdapters } from './registry.mjs';
 import { listVault } from './vault.mjs';
 
 const H = 3600000;
-export const LIMITS = { noSuccessHours: 36, sessionMaxDays: 20 };
+export const LIMITS = { noSuccessHours: 36, sessionMaxDays: 20, unmatchedHours: 48 };
+const UNMATCHED = 'inbox:unmatched';
 
 // opts.adaptersImpl / opts.vaultImpl let tests inject fixtures.
 export async function opsHealth(now = new Date(), { adaptersImpl = loadAdapters, vaultImpl = listVault } = {}) {
@@ -47,5 +48,11 @@ export async function opsHealth(now = new Date(), { adaptersImpl = loadAdapters,
     };
   });
   for (const v of vendors) for (const p of v.problems) problems.push(`${v.vendor}: ${p}`);
-  return { state: problems.length ? 'ALERT' : 'ok', enabled, vendors, problems };
+
+  // Unclaimed inbox files are retried every sweep, so anything recorded in the window is still sitting there.
+  let unmatched = [];
+  try { unmatched = recentFailures(UNMATCHED, new Date(t - LIMITS.unmatchedHours * H).toISOString()); }
+  catch (e) { problems.push(`store unreadable: ${e?.message || e}`); }
+  if (unmatched.length) problems.unshift(`${unmatched.length} unmatched report file${unmatched.length === 1 ? '' : 's'} in the inbox`);
+  return { state: problems.length ? 'ALERT' : 'ok', enabled, vendors, problems, unmatched };
 }

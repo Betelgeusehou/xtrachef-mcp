@@ -5,13 +5,34 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { opsDir, upsertResult, recordRun } from './store.mjs';
 import { adapters as loadAdapters, getAdapter } from './registry.mjs';
-import { withSession as realWithSession, buildCtx } from './session.mjs';
+import { withSession as realWithSession, buildCtx, redact } from './session.mjs';
 import { getCreds } from './vault.mjs';
 
 export const TZ = 'America/Chicago';
 const BROWSER_MODES = ['session', 'login', 'handoff'];
 const INBOX_MODES = ['inbox', 'drive'];
 export const EXPIRED = 'session expired — needs handoff';
+export const UNMATCHED = 'inbox:unmatched';
+
+// ---- error hygiene -----------------------------------------------------------------------------
+// Every error that is stored (runs table), returned, or alerted goes through cleanError: the
+// vendor's own credential values are scrubbed, generic secret patterns are redacted, and URLs
+// keep only origin + path (query strings often carry tokens).
+export function stripUrlQueries(s) {
+  return String(s).replace(/\bhttps?:\/\/[^\s'"<>`]+/gi, m => {
+    const [, u, tail] = m.match(/^(.*?)([).,;:!\]}]*)$/); // keep sentence punctuation outside the URL
+    try { const x = new URL(u); return `${x.origin}${x.pathname}${tail}`; }
+    catch { return u.split(/[?#]/)[0] + tail; }
+  });
+}
+function secretsFor(id) {
+  try { return Object.values(getCreds(id) || {}).filter(v => typeof v === 'string'); }
+  catch { return []; }
+}
+export function cleanError(id, e, max = 300) {
+  const msg = typeof e === 'string' ? e : String(e?.message || e || 'failed');
+  return redact(stripUrlQueries(msg), secretsFor(id)).slice(0, max);
+}
 
 // ---- dates -------------------------------------------------------------------------------------
 export function chicagoParts(now = new Date()) {
@@ -84,7 +105,7 @@ export async function runVendor(id, { range = defaultRange(), modes, headless = 
       attempts.push({ mode, ok: true, records });
       return { vendor: adapter.id, ok: true, mode, records, error: null, attempts, logs };
     } catch (e) {
-      const error = e?.expired ? EXPIRED : String(e?.message || e).slice(0, 300);
+      const error = e?.expired ? EXPIRED : cleanError(adapter.id, e);
       recordRun({ vendor: adapter.id, mode, started_at, ok: false, records: 0, error });
       attempts.push({ mode, ok: false, error });
     }
@@ -104,30 +125,42 @@ async function runInboxSweep(importImpl) {
   try { mod = await importImpl(); }
   catch (e) {
     if (e?.code === 'ERR_MODULE_NOT_FOUND') return { skipped: true, reason: 'ops/inbox not installed' };
-    return { ok: false, error: String(e?.message || e) };
+    return { ok: false, error: cleanError('inbox', e) };
   }
   if (typeof mod?.sweepInbox !== 'function') return { skipped: true, reason: 'sweepInbox not exported' };
   const started_at = new Date().toISOString();
   let out;
   try { out = await mod.sweepInbox(); }
   catch (e) {
-    const error = String(e?.message || e).slice(0, 300);
+    const error = cleanError('inbox', e);
     recordRun({ vendor: 'inbox', mode: 'inbox', started_at, ok: false, error });
     return { ok: false, error };
   }
   const items = Array.isArray(out) ? out : Array.isArray(out?.items) ? out.items : [];
   const results = [];
   for (const it of items) {
-    if (!it?.vendor) continue;
+    if (!it) continue;
     const mode = it.mode || 'inbox';
+    if (!it.vendor) {
+      // No adapter claimed this file (or it failed to download). Never drop it silently.
+      const vendor = it.file ? UNMATCHED : 'inbox';
+      const why = cleanError(vendor, it.error || 'no adapter matched', 250);
+      const error = it.file ? `unmatched report file ${stripUrlQueries(it.file)}: ${why}`.slice(0, 300) : why;
+      try { recordRun({ vendor, mode, started_at, ok: false, records: 0, error }); }
+      catch (e) { console.error('[ops] recordRun failed:', cleanError(vendor, e)); }
+      results.push({ vendor, mode, ok: false, records: 0, error, ...(it.file ? { file: String(it.file) } : {}) });
+      continue;
+    }
     try {
       const records = it.result ? upsertResult(it.result, { mode }) : (it.records ?? 0);
       const ok = it.ok !== false && !it.error;
-      recordRun({ vendor: it.vendor, mode, started_at, ok, records, error: ok ? null : it.error });
-      results.push({ vendor: it.vendor, mode, ok, records, error: ok ? null : String(it.error || 'failed') });
+      const error = ok ? null : cleanError(it.vendor, it.error || 'failed');
+      recordRun({ vendor: it.vendor, mode, started_at, ok, records, error });
+      results.push({ vendor: it.vendor, mode, ok, records, error });
     } catch (e) {
-      const error = String(e?.message || e).slice(0, 300);
-      recordRun({ vendor: it.vendor, mode, started_at, ok: false, error });
+      const error = cleanError(it.vendor, e);
+      try { recordRun({ vendor: it.vendor, mode, started_at, ok: false, error }); }
+      catch (e2) { console.error('[ops] recordRun failed:', cleanError(it.vendor, e2)); }
       results.push({ vendor: it.vendor, mode, ok: false, records: 0, error });
     }
   }
@@ -143,6 +176,9 @@ function locked(fn) {
   chain = p.catch(() => {});
   return p;
 }
+// Shared single-browser lock for callers outside the runner (HTTP handoff, MCP tools).
+export const runVendorLocked = (id, opts) => locked(() => runVendor(id, opts));
+export const withBrowserLock = fn => locked(fn);
 
 export function runAll(opts = {}) {
   return locked(async () => {
@@ -181,15 +217,23 @@ export async function alertFailures(results, { fetchImpl = fetch, now = new Date
   const today = chicagoParts(now).date;
   const status = readStatus();
   const sent = status.alerts || {};
-  const fresh = failed.filter(r => sent[r.vendor] !== today);
+  // Vendors alert once per Chicago day; unmatched inbox files alert once per file, ever.
+  const keyOf = r => r.vendor === UNMATCHED ? `${UNMATCHED}:${r.file || r.error}` : r.vendor;
+  const seen = new Set();
+  const fresh = failed.filter(r => {
+    const k = keyOf(r);
+    if (seen.has(k)) return false;
+    seen.add(k);
+    return r.vendor === UNMATCHED ? !sent[k] : sent[k] !== today;
+  });
   if (!fresh.length) return [];
-  const body = fresh.map(r => `${r.vendor}${r.mode ? ` (${r.mode})` : ''}: ${String(r.error || 'failed').slice(0, 200)}`).join('\n');
+  const body = fresh.map(r => `${r.vendor}${r.mode ? ` (${r.mode})` : ''}: ${cleanError(r.vendor, r.error || 'failed', 200)}`).join('\n');
   try {
     await fetchImpl(url, { method: 'POST', headers: { 'Content-Type': 'text/plain', Title: 'Ops connector alert', Priority: 'high' }, body });
-    for (const r of fresh) sent[r.vendor] = today;
+    for (const r of fresh) sent[keyOf(r)] = today;
     writeStatus({ ...readStatus(), alerts: sent });
-  } catch (e) { console.error('[ops] alert webhook failed:', e?.message || e); }
-  return fresh.map(r => r.vendor);
+  } catch (e) { console.error('[ops] alert webhook failed:', cleanError('alert', e)); }
+  return fresh.map(keyOf);
 }
 
 // ---- scheduler ---------------------------------------------------------------------------------------
@@ -202,23 +246,32 @@ export async function tick(now = new Date(), opts = {}) {
   const key = `${date}T${String(hour).padStart(2, '0')}`;
   const prior = readStatus();
   if (prior.lastKey === key && prior.state !== 'running') return null;
-  writeStatus({ ...prior, lastKey: key, state: 'running', startedAt: now.toISOString() });
   try {
+    writeStatus({ ...prior, lastKey: key, state: 'running', startedAt: now.toISOString() });
     const out = await runAll(opts);
     writeStatus({ ...readStatus(), lastKey: key, state: out.ok ? 'ok' : 'partial', completedAt: new Date().toISOString(),
       results: out.results.map(({ vendor, ok, mode, records, error }) => ({ vendor, ok, mode, records, error })), inbox: out.inbox });
     return out;
   } catch (e) {
-    writeStatus({ ...readStatus(), lastKey: key, state: 'error', completedAt: new Date().toISOString(), error: String(e?.message || e).slice(0, 300) });
+    const error = cleanError('runner', e);
+    console.error('[ops] tick failed:', error);
+    try { writeStatus({ ...readStatus(), lastKey: key, state: 'error', completedAt: new Date().toISOString(), error }); }
+    catch (e2) { console.error('[ops] status write failed:', cleanError('runner', e2)); }
     return null;
   }
+}
+
+// Scheduler entry: never rejects, so a timer can never raise an unhandled rejection.
+export function safeTick(now, opts) {
+  try { return tick(now, opts).catch(e => { console.error('[ops] tick', cleanError('runner', e)); return null; }); }
+  catch (e) { console.error('[ops] tick', cleanError('runner', e)); return Promise.resolve(null); }
 }
 
 let timer;
 export function startOpsRunner() {
   if (process.env.OPS_ENABLED !== 'true' || timer) return false;
-  void tick();
-  timer = setInterval(() => void tick(), 60000);
+  safeTick();
+  timer = setInterval(() => { safeTick(); }, 60000);
   timer.unref();
   return true;
 }

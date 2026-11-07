@@ -7,7 +7,13 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { opsDir } from './store.mjs';
 
-const MAGIC = 'opsv1';
+const MAGIC = 'opsv2';
+const TAG_BYTES = 16;
+// Each ciphertext is bound (GCM AAD) to the context it was written for: 'vault' for vault.enc,
+// `session:<vendorId>` for a session file. The context is also carried in the envelope so a
+// mismatch can be reported clearly; tampering with it still fails authentication.
+const b64u = s => Buffer.from(s, 'utf8').toString('base64url');
+const unb64u = s => Buffer.from(s, 'base64url').toString('utf8');
 
 export function vaultKey() {
   const raw = process.env.OPS_VAULT_KEY;
@@ -17,22 +23,28 @@ export function vaultKey() {
   return key;
 }
 
-export function encrypt(obj, key = vaultKey()) {
+export function encrypt(obj, key = vaultKey(), aad = 'vault') {
   const iv = crypto.randomBytes(12);
-  const c = crypto.createCipheriv('aes-256-gcm', key, iv);
+  const c = crypto.createCipheriv('aes-256-gcm', key, iv, { authTagLength: TAG_BYTES });
+  c.setAAD(Buffer.from(aad, 'utf8'));
   const body = Buffer.concat([c.update(JSON.stringify(obj), 'utf8'), c.final()]);
-  return [MAGIC, iv.toString('base64'), c.getAuthTag().toString('base64'), body.toString('base64')].join('.');
+  return [MAGIC, b64u(aad), iv.toString('base64'), c.getAuthTag().toString('base64'), body.toString('base64')].join('.');
 }
 
-export function decrypt(text, key = vaultKey()) {
-  const [magic, iv, tag, body] = String(text).trim().split('.');
-  if (magic !== MAGIC || !iv || !tag || body === undefined) throw Error('Vault file is not in the expected format');
+export function decrypt(text, key = vaultKey(), aad = 'vault') {
+  const [magic, ctx, iv, tag, body, extra] = String(text).trim().split('.');
+  if (magic !== MAGIC || !ctx || !iv || !tag || body === undefined || extra !== undefined) throw Error('Vault file is not in the expected format');
+  const stored = unb64u(ctx);
+  if (stored !== aad) throw Error(`Vault decrypt failed — file was written for context "${stored}", expected "${aad}"`);
+  const tagBuf = Buffer.from(tag, 'base64');
+  if (tagBuf.length !== TAG_BYTES) throw Error(`Vault file has an invalid auth tag (${tagBuf.length} bytes, expected ${TAG_BYTES})`);
   try {
-    const d = crypto.createDecipheriv('aes-256-gcm', key, Buffer.from(iv, 'base64'));
-    d.setAuthTag(Buffer.from(tag, 'base64'));
+    const d = crypto.createDecipheriv('aes-256-gcm', key, Buffer.from(iv, 'base64'), { authTagLength: TAG_BYTES });
+    d.setAAD(Buffer.from(aad, 'utf8'));
+    d.setAuthTag(tagBuf);
     return JSON.parse(Buffer.concat([d.update(Buffer.from(body, 'base64')), d.final()]).toString('utf8'));
   } catch {
-    throw Error('Vault decrypt failed — OPS_VAULT_KEY does not match the key the vault was written with');
+    throw Error(`Vault decrypt failed — OPS_VAULT_KEY does not match the key the vault was written with, or the file was altered (context "${aad}")`);
   }
 }
 
@@ -54,9 +66,9 @@ export const envVarFor = id => `OPS_CREDS_${safeId(id).toUpperCase().replace(/[^
 function readVault() {
   const f = vaultFile();
   if (!fs.existsSync(f)) return {};
-  return decrypt(fs.readFileSync(f, 'utf8'));
+  return decrypt(fs.readFileSync(f, 'utf8'), vaultKey(), 'vault');
 }
-function writeVault(v) { atomicWrite(vaultFile(), encrypt(v)); }
+function writeVault(v) { atomicWrite(vaultFile(), encrypt(v, vaultKey(), 'vault')); }
 
 function envCreds(id) {
   const raw = process.env[envVarFor(id)];
@@ -94,14 +106,14 @@ export function deleteCreds(vendorId) {
 export function saveSession(vendorId, storageState, { source = 'unknown' } = {}) {
   if (!storageState || typeof storageState !== 'object') throw Error('saveSession needs a storageState object');
   const savedAt = new Date().toISOString();
-  atomicWrite(sessionFile(vendorId), encrypt({ storageState, savedAt, source }));
+  atomicWrite(sessionFile(vendorId), encrypt({ storageState, savedAt, source }, vaultKey(), `session:${vendorId}`));
   return { savedAt, source };
 }
 
 export function loadSession(vendorId) {
   const f = sessionFile(vendorId);
   if (!fs.existsSync(f)) return null;
-  return decrypt(fs.readFileSync(f, 'utf8'));
+  return decrypt(fs.readFileSync(f, 'utf8'), vaultKey(), `session:${vendorId}`);
 }
 
 export function clearSession(vendorId) {

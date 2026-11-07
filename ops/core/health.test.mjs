@@ -60,3 +60,17 @@ test('surfaces invalid vendor files and vault errors', async () => {
   assert.ok(h.problems.some(p => p.includes('bad.mjs')));
   assert.ok(h.problems.some(p => p.includes('vault unreadable')));
 });
+
+test('surfaces unmatched inbox report files as a top-level problem', async () => {
+  const at = ago(2);
+  const ins = S.open().prepare('INSERT INTO runs (vendor, mode, started_at, finished_at, ok, records, error) VALUES (?,?,?,?,?,?,?)');
+  ins.run('inbox:unmatched', 'inbox', at, at, 0, 0, 'unmatched report file a.csv: no adapter matched');
+  ins.run('inbox:unmatched', 'inbox', ago(1), ago(1), 0, 0, 'unmatched report file a.csv: no adapter matched');
+  ins.run('inbox:unmatched', 'inbox', at, at, 0, 0, 'unmatched report file b.pdf: no adapter matched');
+  ins.run('inbox:unmatched', 'inbox', ago(100), ago(100), 0, 0, 'unmatched report file old.csv: no adapter matched');
+  const h = await opsHealth(NOW, { adaptersImpl: async () => [], vaultImpl: () => [] });
+  assert.equal(h.state, 'ALERT');
+  assert.equal(h.problems[0], '2 unmatched report files in the inbox');
+  assert.equal(h.unmatched.length, 2);
+  assert.ok(!h.vendors.some(v => v.vendor === 'inbox:unmatched'));
+});
