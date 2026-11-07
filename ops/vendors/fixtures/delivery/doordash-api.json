@@ -1,0 +1,24 @@
+{
+  "_note": "Synthetic responses in the ASSUMED shape of ENDPOINTS in doordash.mjs. Replace with captures from npm run ops:record doordash.",
+  "stores": { "stores": [ { "id": "24001", "name": "Betelgeuse - Montrose" }, { "id": "24002", "name": "Betelgeuse Washington Ave" } ] },
+  "transactions": {
+    "24001": [
+      { "transactions": [
+          { "transaction_type": "DELIVERY", "transaction_id": "T-9001", "doordash_order_id": "a1f0c2d4-0001", "timestamp_local_date": "2026-11-02", "timestamp_local_time": "19:15:00", "final_order_status": "Delivered", "subtotal": { "unit_amount": 4000, "currency": "USD" }, "subtotal_tax_passed_to_merchant": { "unit_amount": 0, "currency": "USD" }, "staff_tip": { "unit_amount": 0, "currency": "USD" }, "commission": { "unit_amount": -600, "currency": "USD" }, "payment_processing_fee": { "unit_amount": -140, "currency": "USD" }, "marketing_fees_including_any_applicable_taxes": { "unit_amount": -200, "currency": "USD" }, "error_charges": { "unit_amount": 0, "currency": "USD" }, "adjustments": { "unit_amount": 0, "currency": "USD" }, "net_total": { "unit_amount": 3060, "currency": "USD" }, "payout_id": "P-M-1001", "payout_date": "2026-11-10" }
+        ], "next_cursor": "c2" },
+      { "transactions": [
+          { "transaction_type": "DELIVERY", "transaction_id": "T-9006", "doordash_order_id": "a1f0c2d4-0004", "timestamp_local_date": "2026-11-04", "timestamp_local_time": "03:59:00", "final_order_status": "Delivered", "subtotal": 18.0, "subtotal_tax_passed_to_merchant": 0, "staff_tip": 0, "commission": -2.7, "payment_processing_fee": -0.63, "error_charges": 0, "adjustments": 0, "net_total": 14.67, "payout_id": "P-M-1001", "payout_date": "2026-11-10" },
+          { "transaction_type": "ERROR_CHARGE", "transaction_id": "T-9004", "doordash_order_id": "a1f0c2d4-0001", "timestamp_local_date": "2026-11-04", "timestamp_local_time": "10:00:00", "subtotal": 0, "error_charges": -8.5, "adjustments": 0, "net_total": -8.5, "payout_id": "P-M-1001", "payout_date": "2026-11-10" }
+        ], "next_cursor": null }
+    ],
+    "24002": [
+      { "transactions": [
+          { "transaction_type": "DELIVERY", "transaction_id": "T-9002", "doordash_order_id": "a1f0c2d4-0002", "timestamp_local_date": "2026-11-03", "timestamp_local_time": "01:40:00", "final_order_status": "Delivered", "subtotal": 25.5, "subtotal_tax_passed_to_merchant": 0, "staff_tip": 0, "commission": -3.83, "payment_processing_fee": -0.89, "error_charges": 0, "adjustments": 0, "net_total": 20.78, "payout_id": "P-W-2001", "payout_date": "2026-11-10" }
+        ], "next_cursor": null }
+    ]
+  },
+  "payouts": {
+    "24001": { "payouts": [ { "payout_id": "P-M-1001", "payout_date": "2026-11-10", "transaction_start_local_date": "2026-11-02", "transaction_end_local_date": "2026-11-08", "subtotal": 58.0, "commission": -8.7, "payment_processing_fee": -2.03, "marketing_fees_including_any_applicable_taxes": -2.0, "error_charges": -8.5, "adjustments": 0, "net_payout": 36.77, "payout_status": "Paid" } ] },
+    "24002": { "payouts": [ { "payout_id": "P-W-2001", "payout_date": "2026-11-10", "transaction_start_local_date": "2026-11-02", "transaction_end_local_date": "2026-11-08", "subtotal": 25.5, "commission": -3.83, "payment_processing_fee": -0.89, "error_charges": 0, "adjustments": 0, "net_payout": 20.78, "payout_status": "Paid" } ] }
+  }
+}

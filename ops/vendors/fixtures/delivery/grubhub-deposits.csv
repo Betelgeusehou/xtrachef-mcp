@@ -1,0 +1,3 @@
+Restaurant,Restaurant ID,Deposit ID,Deposit Date,Period Start,Period End,Gross Sales,Total Fees,Adjustments,Deposit Amount
+Betelgeuse (Montrose),gh-1101,D-55501,11/09/2026,11/02/2026,11/08/2026,$75.00,($26.64),$2.00,$50.36
+Betelgeuse - Washington,gh-1102,D-55502,11/09/2026,11/02/2026,11/08/2026,$33.00,($5.50),($6.00),$21.50

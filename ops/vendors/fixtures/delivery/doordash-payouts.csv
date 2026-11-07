@@ -1,0 +1,4 @@
+Business ID,Store ID,Transaction start local date,Transaction end local date,Store name,Merchant store ID,Payout date,Currency,Subtotal,Subtotal tax passed to merchant,Staff tip,Commission,Commission tax,Payment processing fee,Marketing fees | (including any applicable taxes),Customer discounts from marketing | (funded by you),DoorDash marketing credit,Error charges,Adjustments,Total before adjustments,Net payout,Payout ID,Payout status
+5501,24001,2026-11-02,2026-11-08,Betelgeuse - Montrose,,2026-11-10,USD,70.00,0.00,0.00,-10.50,0.00,-2.45,-27.00,0.00,0.00,-8.50,0.00,30.05,21.55,P-M-1001,Paid
+5501,24002,2026-11-02,2026-11-08,Betelgeuse Washington Ave,,2026-11-10,USD,57.50,0.00,0.00,-8.63,0.00,-2.01,-1.25,-5.00,0.00,0.00,3.00,40.61,43.61,P-W-2001,Paid
+5501,24009,2026-11-02,2026-11-08,Betelgeuse Katy,,2026-11-10,USD,20.00,0.00,0.00,-3.00,0.00,-0.70,0.00,0.00,0.00,0.00,0.00,16.30,16.30,P-K-3001,Paid
