@@ -338,7 +338,7 @@ export default {
   modes: ['session', 'inbox', 'drive'],
   kinds: ['delivery_orders', 'delivery_payouts'],
   loginUrl: 'https://merchants.ubereats.com/manager',
-  handoffDomains: ['uber.com', 'ubereats.com'],
+  handoffDomains: ['merchants.ubereats.com', 'auth.uber.com'],
   // no login(): sign-in runs through auth.uber.com (SMS code first, password as a
   // fallback, bot/risk checks). Not a plain form; sessions come from handoff.
   isLoggedIn,

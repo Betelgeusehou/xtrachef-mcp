@@ -564,5 +564,5 @@ test('adapter shapes match the contract', () => {
   assert.equal(typeof homebase.login, 'function'); assert.equal(typeof homebase.apiCollect, 'function');
   assert.deepEqual(toastPayroll.modes, ['session', 'inbox', 'drive']);
   assert.equal(toastPayroll.login, undefined);
-  assert.ok(toastPayroll.handoffDomains.includes('payroll.toasttab.com') && toastPayroll.handoffDomains.includes('toasttab.com'));
+  assert.ok(toastPayroll.handoffDomains.includes('payroll.toasttab.com') && !toastPayroll.handoffDomains.includes('toasttab.com'));
 });

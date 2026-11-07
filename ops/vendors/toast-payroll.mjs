@@ -350,7 +350,7 @@ export default {
   modes: ['session', 'inbox', 'drive'],
   kinds: ['payroll_runs', 'payroll_lines'],
   loginUrl: `${ORIGIN}/`,
-  handoffDomains: ['toasttab.com', 'payroll.toasttab.com', 'auth.toasttab.com'],
+  handoffDomains: ['payroll.toasttab.com', 'auth.toasttab.com'],
   isLoggedIn,
   collect,
   matchFile,
