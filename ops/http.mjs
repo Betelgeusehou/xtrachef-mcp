@@ -2,10 +2,11 @@
 // that already passed the XTRACHEF_MCP_SECRET path check, with `route` = the path
 // after the secret (e.g. "/ops/status").
 //
-//   GET  /ops/handoff/vendors      vendors that take a pushed session + their cookie domains (extra bearer token)
-//   POST /ops/handoff/<vendorId>   Chrome pushes a logged-in storageState (extra bearer token)
+//   GET  /ops/handoff/vendors      vendors that take a pushed session + their cookie hosts (extra bearer token)
+//   POST /ops/handoff/<vendorId>   Chrome pushes a logged-in storageState (extra bearer token). Stored only if it
+//                                  passes the adapter's sign-in check (409 otherwise). 503 unless OPS_ENABLED=true.
 //   GET  /ops/status               same payload as the ops_status MCP tool
-//   POST /ops/sync[?vendor=id]     run collectors now
+//   POST /ops/sync[?vendor=id]     run collectors now (503 unless OPS_ENABLED=true)
 import crypto from 'node:crypto';
 import { opsModule, opsStatus, syncNow } from './tools.mjs';
 
@@ -25,22 +26,37 @@ export function registrableDomain(hostOrUrl) {
   return parts.length >= n ? parts.slice(-n).join('.') : null;
 }
 
-// Registrable domains a vendor's session may legitimately carry cookies for.
+const hostOf = hostOrUrl => {
+  let host = String(hostOrUrl || '').trim().toLowerCase();
+  if (/^[a-z]+:\/\//.test(host)) { try { host = new URL(host).hostname; } catch { return null; } }
+  host = host.replace(/^\.+/, '').replace(/\.+$/, '');
+  return host && registrableDomain(host) ? host : null;
+};
+
+// Hosts a vendor's session may legitimately carry cookies for. With handoffDomains: the loginUrl
+// host plus each listed entry, kept exact ('auth.uber.com' stays 'auth.uber.com', it is not widened
+// to 'uber.com'; listing a bare 'uber.com' still allows all of it). Without handoffDomains: the
+// loginUrl's registrable domain, as before.
 export function allowedDomains(adapter) {
   const out = new Set();
-  const base = registrableDomain(adapter?.loginUrl);
+  const listed = (Array.isArray(adapter?.handoffDomains) ? adapter.handoffDomains : []).map(hostOf).filter(Boolean);
+  const base = listed.length ? hostOf(adapter?.loginUrl) : registrableDomain(adapter?.loginUrl);
   if (base) out.add(base);
-  for (const d of Array.isArray(adapter?.handoffDomains) ? adapter.handoffDomains : []) {
-    const r = registrableDomain(d);
-    if (r) out.add(r);
-  }
+  for (const h of listed) out.add(h);
   return [...out];
 }
 
+// Allowed: a listed host or any subdomain of one (host-only cookies included). Also a domain
+// cookie (leading dot) set on a parent of a listed host, because the browser sends it to that
+// host ('.uber.com' reaches auth.uber.com) - but never on a bare public suffix, and never a
+// host-only cookie of a parent (the browser would not send that one to the listed host).
 export function domainAllowed(domain, allowed) {
-  const d = String(domain || '').toLowerCase().replace(/^\.+/, '');
+  const raw = String(domain || '').toLowerCase();
+  const d = raw.replace(/^\.+/, '');
   if (!d) return false;
-  return allowed.some(a => d === a || d.endsWith('.' + a));
+  if (allowed.some(a => d === a || d.endsWith('.' + a))) return true;
+  if (!raw.startsWith('.') || !registrableDomain(d)) return false;
+  return allowed.some(a => a.endsWith('.' + d));
 }
 
 // Validate a Playwright storageState and keep only cookies/origins for the vendor's domains.
@@ -109,20 +125,65 @@ const send = (res, status, obj) => {
   res.end(JSON.stringify(obj));
 };
 
+export const DISABLED = 'ops layer disabled (set OPS_ENABLED=true)';
+export const opsEnabled = (deps = {}) => (deps.enabled ?? process.env.OPS_ENABLED === 'true') === true;
+
 async function resolveDeps(deps) {
   return {
     vault: deps.vault ?? (await opsModule('./core/vault.mjs')).mod,
     registry: deps.registry ?? (await opsModule('./core/registry.mjs')).mod,
     runner: deps.runner ?? (await opsModule('./core/runner.mjs')).mod,
+    session: deps.session ?? (await opsModule('./core/session.mjs')).mod,
     log: deps.log ?? ((...a) => console.error('[ops]', ...a)),
   };
+}
+
+// Stores a pushed session only if it is actually signed in, so a signed-out Chrome can never
+// overwrite a working server-side session. Runs inside runner.withBrowserLock so the check never
+// races a collector run (or another handoff) over the same vault entry.
+//   alive      -> keep it (source 'handoff')                    -> {status:'alive'}
+//   not alive  -> put the previous session back, or clear it   -> {status:'dead'}
+//   check threw (no browser, navigation error) -> keep it as 'handoff-unverified' -> {status:'unverified'}
+export async function storeVerifiedSession(vendorId, adapter, incoming, { vault, runner, session, log = () => {} }) {
+  const withLock = typeof runner?.withBrowserLock === 'function' ? fn => runner.withBrowserLock(fn) : fn => fn();
+  return withLock(async () => {
+    let prior = null;
+    try { prior = typeof vault.loadSession === 'function' ? vault.loadSession(vendorId) : null; }
+    catch (e) { log(`handoff ${vendorId}: previous session unreadable (${e?.message || e}); treating as none`); }
+    const restore = () => {
+      if (prior?.storageState) vault.saveSession(vendorId, prior.storageState, { source: prior.source || 'unknown' });
+      else if (typeof vault.clearSession === 'function') vault.clearSession(vendorId);
+    };
+    // sessionAlive reads the session from the vault, so the candidate has to be there first.
+    vault.saveSession(vendorId, incoming, { source: 'handoff-pending' });
+    if (typeof adapter.isLoggedIn !== 'function' || typeof session?.sessionAlive !== 'function') {
+      vault.saveSession(vendorId, incoming, { source: 'handoff-unverified' });
+      return { status: 'unverified', reason: typeof adapter.isLoggedIn !== 'function' ? 'adapter has no isLoggedIn check' : 'session runtime not deployed' };
+    }
+    let alive;
+    try { alive = await session.sessionAlive(adapter); }
+    catch (e) {
+      vault.saveSession(vendorId, incoming, { source: 'handoff-unverified' });
+      return { status: 'unverified', reason: String(e?.message || e).slice(0, 200) };
+    }
+    try {
+      if (!alive) { restore(); return { status: 'dead' }; }
+      // On success sessionAlive saves the refreshed storageState (source 'refresh'); keep that copy so
+      // cookies the vendor rotated during the check aren't reverted to the pushed ones.
+      let current = null;
+      try { current = typeof vault.loadSession === 'function' ? vault.loadSession(vendorId) : null; } catch { current = null; }
+      vault.saveSession(vendorId, current?.source === 'refresh' && current.storageState ? current.storageState : incoming, { source: 'handoff' });
+      return { status: 'alive' };
+    } catch (e) { restore(); throw e; }
+  });
 }
 
 async function handoff(req, res, vendorId, deps) {
   const verdict = checkHandoffToken(req.headers.authorization, deps.token ?? process.env.OPS_HANDOFF_TOKEN);
   if (verdict === 'unconfigured') return send(res, 503, { ok: false, error: 'handoff disabled: OPS_HANDOFF_TOKEN (>=32 chars) not set' });
   if (verdict !== 'ok') return send(res, 401, { ok: false, error: 'unauthorized' });
-  const { vault, registry, runner, log } = await resolveDeps(deps);
+  if (!opsEnabled(deps)) return send(res, 503, { ok: false, error: DISABLED });
+  const { vault, registry, runner, session, log } = await resolveDeps(deps);
   if (!registry?.getAdapter) return send(res, 503, { ok: false, error: 'vendor registry not deployed yet' });
   if (!vault?.saveSession) return send(res, 503, { ok: false, error: 'vault not deployed yet' });
   if (!/^[a-z0-9][a-z0-9-]{0,63}$/.test(vendorId)) return send(res, 404, { ok: false, error: 'unknown vendor' });
@@ -139,15 +200,25 @@ async function handoff(req, res, vendorId, deps) {
   try { result = validateStorageState(body?.storageState, allowed); }
   catch (e) { return send(res, 400, { ok: false, error: e.message }); }
 
-  await vault.saveSession(vendorId, result.storageState, { source: 'handoff' });
-  log(`handoff: stored session for ${vendorId} (${result.storageState.cookies.length} cookies, ${result.dropped} off-domain entries dropped)`);
-  if (runner?.runVendor) {
+  const n = result.storageState.cookies.length;
+  const v = await storeVerifiedSession(vendorId, adapter, result.storageState, { vault, runner, session, log });
+  if (v.status === 'dead') {
+    log(`handoff: rejected ${vendorId} session (not signed in); previous session kept`);
+    return send(res, 409, { ok: false, vendor: vendorId, error: 'session not signed in' });
+  }
+  if (v.status === 'unverified') {
+    log(`handoff: stored ${vendorId} session unverified (${v.reason}); ${n} cookies, ${result.dropped} off-domain entries dropped`);
+    return send(res, 202, { ok: true, vendor: vendorId, verified: false, cookies: n, dropped: result.dropped, note: 'stored unverified: the sign-in check could not run' });
+  }
+  log(`handoff: stored verified session for ${vendorId} (${n} cookies, ${result.dropped} off-domain entries dropped)`);
+  const canRun = typeof runner?.runVendorLocked === 'function';
+  if (canRun) {
     Promise.resolve()
-      .then(() => runner.runVendor(vendorId, {}))
+      .then(() => runner.runVendorLocked(vendorId, {}))
       .then(r => log(`handoff-triggered run ${vendorId}: ${r?.ok ? 'ok' : 'failed'}${r?.records != null ? ` records=${r.records}` : ''}${r?.error ? ` error=${String(r.error).slice(0, 200)}` : ''}`))
       .catch(e => log(`handoff-triggered run ${vendorId} threw: ${e?.message || e}`));
   }
-  return send(res, 200, { ok: true, vendor: vendorId, cookies: result.storageState.cookies.length, dropped: result.dropped, sync: runner?.runVendor ? 'started' : 'runner not deployed yet' });
+  return send(res, 200, { ok: true, vendor: vendorId, verified: true, cookies: n, dropped: result.dropped, sync: canRun ? 'started' : 'runner not deployed yet' });
 }
 
 const SESSION_MODES = ['session', 'handoff', 'login'];
@@ -181,6 +252,7 @@ export async function handleOps(req, res, route, deps = {}) {
     if (route === '/ops/sync' && req.method === 'POST') {
       const vendor = url.searchParams.get('vendor') || undefined;
       const from = url.searchParams.get('from') || undefined, through = url.searchParams.get('through') || undefined;
+      if (!opsEnabled(deps)) { send(res, 503, { ok: false, error: DISABLED }); return true; }
       for (const d of [from, through]) if (d && !/^\d{4}-\d{2}-\d{2}$/.test(d)) { send(res, 400, { ok: false, error: 'from/through must be YYYY-MM-DD' }); return true; }
       send(res, 200, await syncNow({ vendor, from, through }, deps));
       return true;

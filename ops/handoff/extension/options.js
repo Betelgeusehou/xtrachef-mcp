@@ -13,7 +13,8 @@ async function save() {
   const stored = await chrome.storage.local.get('token');
   if (!token && !stored.token) throw Error('Paste the handoff token');
   if (token && token.length < 32) throw Error('Token must be at least 32 characters');
-  // The service worker can only reach origins it has host permission for (Railway is pre-granted).
+  // The service worker can only reach origins it has host permission for. Nothing is pre-granted for the
+  // server: this asks for exactly its origin (manifest optional_host_permissions) on Save.
   const origin = new URL(base).origin + '/*';
   const granted = await chrome.permissions.contains({ origins: [origin] }) || await chrome.permissions.request({ origins: [origin] });
   if (!granted) throw Error('Permission to reach the server was denied');

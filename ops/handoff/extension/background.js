@@ -1,7 +1,7 @@
 // MV3 service worker: reads vendor cookies (including httpOnly) with chrome.cookies and
 // POSTs them as a Playwright storageState to <server>/ops/handoff/<vendor>.
 // Runs daily at 3:30 local time and on demand from the popup. Never logs cookie values or the token.
-import { DEFAULT_VENDORS, toStorageState, likelySignedIn, fingerprint, msUntil, normalizeBase } from './convert.js';
+import { DEFAULT_VENDORS, cookieQueries, toStorageState, likelySignedIn, fingerprint, msUntil, normalizeBase } from './convert.js';
 
 const ALARM = 'daily-handoff';
 const HOUR = 3, MINUTE = 30;
@@ -38,7 +38,7 @@ async function vendorList(base, token) {
 }
 
 async function cookiesFor(domains) {
-  return Promise.all(domains.map(domain => chrome.cookies.getAll({ domain })));
+  return Promise.all(domains.flatMap(cookieQueries).map(q => chrome.cookies.getAll(q)));
 }
 
 async function pushVendor(v, base, token, prev) {
@@ -56,7 +56,10 @@ async function pushVendor(v, base, token, prev) {
   });
   let body = {};
   try { body = await res.json(); } catch { /* non-JSON error */ }
+  if (res.status === 409) return { at, ok: false, status: 'signed-out', message: `${v.name}: the server's sign-in check failed, so it kept its previous session. Open ${v.loginUrl || v.domains[0]}, sign in, then Push now.` };
   if (!res.ok) return { at, ok: false, status: `http-${res.status}`, message: body.error || `Server returned ${res.status}` };
+  // 202 = stored but the server couldn't run its sign-in check; push again next time instead of skipping as unchanged.
+  if (body.verified === false) return { at, pushedAt: at, ok: true, status: 'pushed (unverified)', cookies: body.cookies };
   return { at, pushedAt: at, ok: true, status: 'pushed', cookies: body.cookies, fp };
 }
 
