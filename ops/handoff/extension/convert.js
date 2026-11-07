@@ -8,7 +8,7 @@ export const DEFAULT_VENDORS = [
   { id: 'ubereats', name: 'Uber Eats Manager', loginUrl: 'https://merchants.ubereats.com/', domains: ['ubereats.com', 'uber.com'] },
   { id: 'grubhub', name: 'Grubhub for Restaurants', loginUrl: 'https://restaurant.grubhub.com/', domains: ['grubhub.com'] },
   { id: 'homebase', name: 'Homebase', loginUrl: 'https://app.joinhomebase.com/', domains: ['joinhomebase.com'] },
-  { id: 'toast', name: 'Toast / Toast Payroll', loginUrl: 'https://www.toasttab.com/restaurants/admin/home', domains: ['toasttab.com'] },
+  { id: 'toast-payroll', name: 'Toast Payroll', loginUrl: 'https://www.toasttab.com/restaurants/admin/home', domains: ['toasttab.com'] },
 ];
 
 const SAME_SITE = { no_restriction: 'None', lax: 'Lax', strict: 'Strict', unspecified: 'Lax' };
